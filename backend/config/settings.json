@@ -1,0 +1,85 @@
+{
+  "ultron_name": "Ultron",
+  "wake_word": "ultron",
+  "llm": {
+    "provider": "ollama",
+    "model": "qwen2.5-coder:7b",
+    "base_url": "http://127.0.0.1:11434",
+    "timeout_seconds": 180
+  },
+  "voice": {
+    "stt_model": "small",
+    "tts": "edge-tts-neural",
+    "neural_voice": "tr-TR-AhmetNeural",
+    "rate": "-6%",
+    "pitch": "-8Hz",
+    "sample_rate": 16000,
+    "listen_seconds": 8,
+    "live_mode": false,
+    "volume": "+0%"
+  },
+  "security": {
+    "require_confirmation_for": [
+      "delete_file",
+      "run_shell",
+      "install_software",
+      "change_system_setting",
+      "send_message",
+      "write_text",
+      "gui_click",
+      "gui_double_click",
+      "gui_right_click",
+      "gui_scroll",
+      "gui_type",
+      "gui_press",
+      "gui_hotkey",
+      "gui_locate_and_click",
+      "apply_code_patch",
+      "close_application"
+    ]
+  },
+  "proactive": {
+    "enabled": true,
+    "interval_seconds": 10,
+    "ram_warning_percent": 90,
+    "cpu_warning_percent": 95
+  },
+  "persona_guard_mode": "reframe",
+  "voiceprint_lock_enabled": false,
+  "voiceprint_threshold": 0.75,
+  "sovereign_mode": false,
+  "vision_enabled": false,
+  "vision_targets": [
+    "code",
+    "vscode",
+    "terminal",
+    "pycharm",
+    "chrome",
+    "powershell",
+    "cmd"
+  ],
+  "vision_blacklist": [
+    "password",
+    "banka",
+    "bank",
+    "login",
+    "private",
+    "şifre",
+    "cüzdan",
+    "wallet"
+  ],
+  "vision": {
+    "enabled": true,
+    "model": "llava:7b"
+  },
+  "code_agent": {
+    "enabled": true,
+    "project_root": ".",
+    "max_context_chars": 50000,
+    "require_approval_for_apply": true
+  },
+  "gui_automation": {
+    "enabled": true,
+    "require_confirmation": true
+  }
+}
