@@ -16,9 +16,20 @@ class Auth:
         self.path = path
         self.required = required
         self.pairing_secret = os.environ.get("ULTRON_PAIRING_SECRET", "")
+        # PHASE 1: oturum ömrü — süresiz token yok (default 12h, kayan pencere)
+        self.ttl_s = float(os.environ.get("ULTRON_SESSION_TTL_S", 43200))
         self.sessions: dict[str, dict] = {}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._load()
+
+    def _prune(self) -> None:
+        now = time.time()
+        expired = [t for t, v in self.sessions.items()
+                   if now - float(v.get("last_seen", v.get("created", 0))) > self.ttl_s]
+        for t in expired:
+            del self.sessions[t]
+        if expired:
+            self._save()
 
     def _load(self) -> None:
         try:
@@ -41,7 +52,12 @@ class Auth:
     def valid(self, token: str | None) -> bool:
         if not self.required:
             return True
-        return bool(token) and token in self.sessions
+        self._prune()
+        ok = bool(token) and token in self.sessions
+        if ok and token:
+            self.sessions[token]["last_seen"] = time.time()  # sliding renewal
+            self._save()
+        return ok
 
     def devices(self) -> list[dict]:
         return [{"device": v.get("device"), "created": v.get("created")} for v in self.sessions.values()]

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import aiohttp
 from aiohttp import web
+import uuid
 
 from agent import Agent
 from app.code_intel.analyzer import CodeIntel
@@ -24,6 +25,14 @@ from memory import MemorySystem
 from notifier import Notifier
 from telemetry import Telemetry
 from tools import ToolRegistry
+
+
+def get_system_stats_dict() -> dict:
+    try:
+        from app.telemetry.system_stats import get_system_stats
+        return get_system_stats()
+    except Exception:
+        return {"available": False}
 import test_runner
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -45,15 +54,29 @@ class Hub:
         self.memory = MemorySystem(DATA_DIR, PERSISTENT)
         self.tools = ToolRegistry(WORKSPACE, self.broadcast_tools, self.on_activity, lambda: self.ai_status)
         self.agent = Agent(self.broadcast, self.tools, self.memory, self.telemetry,
-                           lambda: self.ai_status, self.on_activity)
+                           lambda: self.ai_status, self.on_activity,
+                           request_approval=self._request_approval)
         self.bridge: UltronBridge | None = None
         self.pending_task: dict | None = None
         self.loop: asyncio.AbstractEventLoop | None = None
         self.last_command_ts: float = 0.0
         self.audit = AuditLog()
         self.notifier = Notifier(lambda text, level: self._sched_notify(text, level))
-        self.codegen = CodeGen(Path(os.path.dirname(BASE)), self.audit, self.notifier.notify)
+        from app.security.sandbox import FilesystemSandbox
+        try:
+            _cfg = json.loads(Path(BASE, "config", "settings.json").read_text(encoding="utf-8"))
+        except Exception:
+            _cfg = {}
+        self.sandbox = FilesystemSandbox(_cfg, workspace_root=os.path.dirname(BASE))
+        self.codegen = CodeGen(Path(os.path.dirname(BASE)), self.audit, self.notifier.notify,
+                               sandbox=self.sandbox)
         self.code_intel = CodeIntel(os.path.dirname(BASE))
+        from app.security.rate_limit import RateLimiter
+        try:
+            _rlcfg = json.loads(Path(BASE, "config", "settings.json").read_text(encoding="utf-8"))
+        except Exception:
+            _rlcfg = {}
+        self.rate_limiter = RateLimiter(_rlcfg)
         self.auth = Auth(Path(DATA_DIR) / "auth" / "sessions.json", os.environ.get("ULTRON_AUTH", "0") == "1")
         from app.personal.user_dna import MasterRules, UserDNA
         from app.personal.workspace_sentinel import WorkspaceSentinel
@@ -69,6 +92,33 @@ class Hub:
 
     def bridge_available_llm(self) -> bool:
         return bool(self.bridge and self.bridge.available and self.ai_status.get("connected"))
+
+    def _request_approval(self, text: str, risks: list[str]) -> str | None:
+        """Server-side approval store: create a pending task, return its id.
+
+        The ONLY path that grants `approved=True` to the agent is
+        /api/task/approve, which validates a pending task id server-side.
+        Client-supplied `approved` flags are never trusted."""
+        tid = uuid.uuid4().hex[:8]
+        self.pending_task = {
+            "id": tid, "text": text, "created": time.time(), "risks": risks,
+            "steps": [{"label": r, "tool": "terminal", "dangerous": True} for r in risks],
+        }
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(self._approval_requested(tid, risks))
+        except RuntimeError:
+            pass
+        return tid
+
+    async def _approval_requested(self, tid: str, risks: list[str]) -> None:
+        await self.broadcast_task()
+        await self.on_activity(f"Approval required (task {tid}): {', '.join(risks)}", "warn")
+        self.notifier.notify("approval", f"Onay bekleyen komut: {tid}", "warn", force=True)
+
+    async def _task_event(self, ev: dict) -> None:
+        await self.broadcast({"type": "task_engine", "data": ev})
 
     def tools_list(self) -> list[dict]:
         base = self.tools.list_status()
@@ -349,7 +399,21 @@ async def api_iot_discover(_req: web.Request) -> web.Response:
 # ---------------- Phase-9: dual-brain mesh ----------------
 def _mesh_auth_ok(req: web.Request) -> bool:
     token = req.headers.get("Authorization", "").replace("Bearer ", "").strip()
-    return bool(token) and token in hub.auth.sessions
+    if bool(token) and token in hub.auth.sessions:
+        return True
+    # PHASE 12: mobil düğüm eşleştirme anahtarı (vault 'mesh_node_key' / env)
+    key = req.headers.get("X-Mesh-Key", "").strip()
+    if not key:
+        return False
+    import os as _os
+    expected = _os.environ.get("ULTRON_MESH_KEY", "")
+    rt = _rt()
+    if not expected and rt is not None:
+        try:
+            expected = rt.vault.get("mesh_node_key") or ""
+        except Exception:
+            expected = ""
+    return bool(expected) and key == expected
 
 
 async def api_mesh_handshake(req: web.Request) -> web.Response:
@@ -383,6 +447,15 @@ async def api_mesh_pull(req: web.Request) -> web.Response:
     except ValueError:
         since = 0.0
     return web.json_response(hub.mesh_sync.pull(since))
+
+
+async def api_mesh_heartbeat(req: web.Request) -> web.Response:
+    if not _mesh_auth_ok(req):
+        return web.json_response({"ok": False, "error": "unauthorized node"}, status=401)
+    node = req.query.get("node_id", "")
+    alive = hub.mesh_registry.heartbeat(str(node))
+    return web.json_response({"ok": alive,
+                              "nodes": hub.mesh_registry.status() if alive else []})
 
 
 async def api_mesh_nodes(_req: web.Request) -> web.Response:
@@ -613,13 +686,15 @@ async def api_command(req: web.Request) -> web.Response:
     except Exception:
         return web.json_response({"ok": False, "error": "bad json"}, status=400)
     text = str(body.get("text", "")).strip()
-    approved = bool(body.get("approved", False))
     hub.last_command_ts = time.time()
     if not text:
         return web.json_response({"ok": False, "error": "empty command"}, status=400)
     if hub.agent.busy:
         return web.json_response({"ok": False, "error": "agent busy"}, status=409)
-    asyncio.create_task(hub.agent.run(text, approved=approved))
+    # SECURITY: client-supplied `approved` flag is NEVER trusted. Approval is
+    # granted only server-side via /api/task/approve (validates pending id)
+    # or the codegen proposal endpoints (validate proposal id).
+    asyncio.create_task(hub.agent.run(text, approved=False))
     return web.json_response({"ok": True})
 
 
@@ -636,6 +711,11 @@ async def api_task_approve(req: web.Request) -> web.Response:
     task = hub.pending_task
     if not task or task.get("id") != pid:
         return web.json_response({"ok": False, "error": "no such pending task"}, status=404)
+    if time.time() - float(task.get("created", 0)) > 900:
+        hub.pending_task = None
+        await hub.broadcast_task()
+        await hub.agent.set_state("IDLE", f"Task {pid} approval expired (TTL 15 min).")
+        return web.json_response({"ok": False, "error": "approval expired"}, status=410)
     text = task["text"]
     hub.pending_task = None
     await hub.broadcast_task()
@@ -838,90 +918,7 @@ async def api_memory_v16_search(req: web.Request) -> web.Response:
     return web.json_response([{"score": round(s, 2), "kind": k, "content": c} for s, k, c, _ in hits])
 
 
-# ---------------- diagnostics (V17.1, temporary) ----------------
-async def api_debug_runtime(_req: web.Request) -> web.Response:
-    import inspect
-    import agent as v15agent
-    import app.agent.agent as v16agent
-    from app.core import runtime as rtmod
-    from app.vision import vision_llm as vmod
-    rt = hub.bridge.runtime if (hub.bridge and hub.bridge.available) else None
-    return web.json_response({
-        "pid": os.getpid(),
-        "cwd": os.getcwd(),
-        "server_file": os.path.abspath(__file__),
-        "v15_agent_file": os.path.abspath(v15agent.__file__),
-        "v16_agent_file": os.path.abspath(v16agent.__file__),
-        "runtime_file": os.path.abspath(rtmod.__file__),
-        "vision_llm_file": os.path.abspath(vmod.__file__),
-        "settings_path": os.path.abspath(os.path.join(BASE, "config", "settings.json")),
-        "configured_vision_model": (rt.settings.get("vision", {}).get("model") if rt else None),
-        "installed_models": hub.ai_status.get("models"),
-        "bridge_available": bool(hub.bridge and hub.bridge.available),
-        "v15_agent_vision_hook": getattr(hub.agent, "vision_check", None) is not None,
-        "v15_agent_fallback": getattr(hub.agent, "fallback", None) is not None,
-        "v16_agent_vision_branch_loaded": "vision_pattern" in inspect.getsource(v16agent.Agent._direct),
-        "v16_runtime_agent_has_vision_llm": (hasattr(rt.agent, "vision_llm") and rt.agent.vision_llm is not None) if rt else None,
-    })
-
-
-async def api_debug_vision_selftest(req: web.Request) -> web.Response:
-    """One real pipeline run with a full trace. Stops at the exact failing stage."""
-    try:
-        body = await req.json()
-    except Exception:
-        body = {}
-    trace: dict = {"pid": os.getpid(), "cwd": os.getcwd()}
-    text = str(body.get("text", "Ekranımı analiz et ve ekranda ne gördüğünü anlat."))
-    trace["1_detected_vision_intent"] = bool(hub.bridge and hub.bridge.is_vision_flow(text))
-    trace["2_handler"] = "bridge.run_vision / Agent._direct._vision_pipeline (shared regex)"
-    if not (hub.bridge and hub.bridge.available):
-        trace["stop"] = "RUNTIME UNAVAILABLE"
-        return web.json_response(trace)
-    rt = hub.bridge.runtime
-    m = re.search(r"(\S+\.(?:png|jpe?g))", text, re.I)
-    path = str(body.get("path") or (m.group(1) if m else "") or "")
-    if not path:
-        try:
-            path = await asyncio.to_thread(
-                lambda: rt.executor.execute([("capture_screen", {})], approved=True)[0])
-        except Exception as exc:  # noqa: BLE001
-            trace["stop"] = "3_SCREENSHOT"
-            trace["error"] = str(exc)
-            return web.json_response(trace)
-    trace["3_screenshot_path"] = path
-    exists = os.path.exists(path)
-    trace["4_screenshot_exists"] = exists
-    trace["4_screenshot_size"] = os.path.getsize(path) if exists else None
-    if not exists or os.path.getsize(path) == 0:
-        trace["stop"] = "4_PNG_VERIFY"
-        return web.json_response(trace)
-    models = hub.ai_status.get("models") or []
-    model = rt.vision_llm.resolve_model(models)
-    trace["5_selected_model"] = model
-    trace["6_endpoint"] = rt.brain.base_url.rstrip("/") + "/api/chat"
-    if model is None:
-        trace["stop"] = "5_NO_VISION_MODEL"
-        trace["installed_models"] = models
-        return web.json_response(trace)
-    try:
-        analysis = await asyncio.to_thread(rt.vision_llm.analyze, path, VISION_PROMPT, models)
-    except Exception as exc:  # noqa: BLE001
-        trace["stop"] = "7_OLLAMA_CALL"
-        trace["7_image_attached"] = True
-        trace["10_ollama_http_status"] = rt.brain.last_http_status
-        trace["error"] = str(exc)
-        return web.json_response(trace)
-    trace["7_image_attached"] = True
-    trace["8_image_bytes"] = os.path.getsize(path)
-    trace["9_request_model"] = model
-    trace["10_ollama_http_status"] = rt.brain.last_http_status
-    trace["11_response_model"] = rt.brain.last_response_model
-    trace["12_raw_response_head"] = analysis[:200]
-    trace["13_final_response"] = f"EKRAN ANALİZİ ({model}): {analysis}"[:400]
-    return web.json_response(trace)
-
-
+# (V17.1 geçici debug endpoint'leri kaldırıldı — PHASE 14; gerçek tanı: /api/system/doctor)
 # ---------------- mobile vision preview (additive) ----------------
 async def api_vision_last(_req: web.Request) -> web.Response:
     d = Path(BASE) / "data" / "logs"
@@ -959,6 +956,175 @@ async def api_auth_handshake(req: web.Request) -> web.Response:
 
 async def api_auth_devices(_req: web.Request) -> web.Response:
     return web.json_response({"enabled": hub.auth.enabled(), "devices": hub.auth.devices()})
+
+
+# ---------------- Credential vault ----------------
+def _vault():
+    rt = _rt()
+    return rt.vault if rt else None
+
+
+async def api_vault_list(_req: web.Request) -> web.Response:
+    v = _vault()
+    if not v:
+        return web.json_response({"ok": False, "error": "vault unavailable (runtime)"}, status=503)
+    return web.json_response({"ok": True, "entries": v.list_names(), "health": v.health()})
+
+
+async def api_vault_set(req: web.Request) -> web.Response:
+    v = _vault()
+    if not v:
+        return web.json_response({"ok": False, "error": "vault unavailable (runtime)"}, status=503)
+    try:
+        body = await req.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "bad json"}, status=400)
+    name = str(body.get("name", "")).strip()
+    value = str(body.get("value", ""))
+    meta = str(body.get("meta", ""))
+    if not name or not value:
+        return web.json_response({"ok": False, "error": "name and value required"}, status=400)
+    try:
+        res = v.set(name, value, meta=meta)
+    except Exception as e:  # noqa: BLE001
+        return web.json_response({"ok": False, "error": str(e)}, status=503)
+    hub.audit.write("VAULT_API_SET", f"name={name}")  # value never logged
+    return web.json_response(res)
+
+
+async def api_vault_delete(req: web.Request) -> web.Response:
+    v = _vault()
+    if not v:
+        return web.json_response({"ok": False, "error": "vault unavailable (runtime)"}, status=503)
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    ok = v.delete(str(body.get("name", "")))
+    return web.json_response({"ok": ok})
+
+
+# ---------------- Skills & connectors ----------------
+async def api_wake_status(_req: web.Request) -> web.Response:
+    rt = _rt()
+    if not rt:
+        return web.json_response({"ok": False, "error": "runtime yok"}, status=503)
+    wm = getattr(rt, "wake_manager", None)
+    if wm is None:
+        return web.json_response({"ok": True, "available": False,
+                                  "engines": [], "note": "wake modülü yüklenemedi"})
+    return web.json_response({"ok": True, **wm.status()})
+
+
+async def api_skills(_req: web.Request) -> web.Response:
+    rt = _rt()
+    if not rt or not getattr(rt, "skills", None):
+        return web.json_response({"ok": False, "error": "runtime yok"}, status=503)
+    return web.json_response({"ok": True, "skills": rt.skills.list()})
+
+
+async def api_connectors_health(_req: web.Request) -> web.Response:
+    rt = _rt()
+    if not rt:
+        return web.json_response({"ok": False, "error": "runtime yok"}, status=503)
+    return web.json_response({"ok": True,
+                              "weather": rt._weather.health(),
+                              "calendar": rt._calendar.health()})
+
+
+# ---------------- Long-running tasks / supervisor / model health ----------------
+async def api_tasks_list(req: web.Request) -> web.Response:
+    engine = getattr(hub, "task_engine", None)
+    if not engine:
+        return web.json_response({"tasks": []})
+    status = req.query.get("status")
+    try:
+        limit = int(req.query.get("limit", "50"))
+    except ValueError:
+        limit = 50
+    rows = engine.list(status=status, limit=limit)
+    slim = [{k: t.get(k) for k in ("id", "goal", "kind", "status", "priority",
+                                   "current_step", "error", "created_at", "updated_at")}
+            | {"steps_total": len(t.get("steps", [])),
+               "steps_done": sum(1 for s in t.get("steps", []) if s.get("status") == "SUCCESS")}
+            for t in rows if t]
+    return web.json_response({"tasks": slim})
+
+
+async def api_tasks_get(req: web.Request) -> web.Response:
+    engine = getattr(hub, "task_engine", None)
+    if not engine:
+        return web.json_response({"ok": False, "error": "task engine unavailable"}, status=503)
+    t = engine.get(req.match_info["id"])
+    if not t:
+        return web.json_response({"ok": False, "error": "no such task"}, status=404)
+    return web.json_response(t)
+
+
+async def api_tasks_create(req: web.Request) -> web.Response:
+    try:
+        body = await req.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "bad json"}, status=400)
+    goal = str(body.get("goal", "")).strip()
+    if not goal:
+        return web.json_response({"ok": False, "error": "empty goal"}, status=400)
+    sup = getattr(hub, "supervisor", None)
+    if not sup:
+        return web.json_response({"ok": False, "error": "supervisor unavailable"}, status=503)
+    budgets = body.get("budgets") or {}
+    task = await sup.submit(goal, budgets=budgets, spawn=True)
+    return web.json_response({"ok": True, "task_id": task["id"], "status": task["status"]})
+
+
+async def api_tasks_cancel(req: web.Request) -> web.Response:
+    engine = getattr(hub, "task_engine", None)
+    if not engine:
+        return web.json_response({"ok": False, "error": "task engine unavailable"}, status=503)
+    res = engine.cancel(req.match_info["id"])
+    return web.json_response(res, status=200 if res.get("ok") else 400)
+
+
+async def api_tasks_pause(req: web.Request) -> web.Response:
+    engine = getattr(hub, "task_engine", None)
+    if not engine:
+        return web.json_response({"ok": False, "error": "task engine unavailable"}, status=503)
+    res = engine.pause(req.match_info["id"])
+    return web.json_response(res, status=200 if res.get("ok") else 400)
+
+
+async def api_tasks_approve(req: web.Request) -> web.Response:
+    """Server-side approval for a task waiting in WAITING_APPROVAL, then resume."""
+    engine = getattr(hub, "task_engine", None)
+    sup = getattr(hub, "supervisor", None)
+    if not engine:
+        return web.json_response({"ok": False, "error": "task engine unavailable"}, status=503)
+    res = engine.approve(req.match_info["id"])
+    if res.get("ok") and sup:
+        t = engine.get(req.match_info["id"])
+        if t and t.get("kind") == "supervisor":
+            engine.spawn(t["id"], sup._runner)
+        hub.audit.write("TASK_APPROVE", req.match_info["id"])
+    return web.json_response(res, status=200 if res.get("ok") else 400)
+
+
+async def api_world(_req: web.Request) -> web.Response:
+    world = getattr(hub, "world", None)
+    if not world:
+        return web.json_response({"ok": False, "error": "world model unavailable"}, status=503)
+    snap = world.snapshot()
+    snap["llm_context"] = world.context_for_llm()
+    return web.json_response(snap)
+
+
+async def api_models_health(_req: web.Request) -> web.Response:
+    rt = _rt()
+    if not rt:
+        return web.json_response({"ok": False, "error": "runtime unavailable"}, status=503)
+    return web.json_response({
+        "configured": rt.brain.model,
+        "installed": hub.ai_status.get("models", []),
+        "router_health": rt.router.health()})
 
 
 # ---------------- WebSocket ----------------
@@ -1027,6 +1193,7 @@ async def on_startup(app: web.Application) -> None:
     hub.loop = asyncio.get_running_loop()
     hub.bridge = UltronBridge(hub, os.path.join(BASE, "config", "settings.json"), asyncio.get_running_loop())
     if hub.bridge.available:
+        hub.audit.extra_values_fn = hub.bridge.runtime.vault.all_values
         hub.agent.fallback = hub.bridge.run  # GENERAL_CONVERSATION → Ollama
         hub.agent.vision_check = hub.bridge.is_vision_flow  # screenshot→LLaVA pipeline
         hub.agent.composite = hub.bridge.run_orchestrated  # Agent 2.0 planner
@@ -1086,7 +1253,10 @@ async def on_startup(app: web.Application) -> None:
     # Phase-10: IoT Nexus + scenes
     from app.iot.iot_nexus import IoTNexus
     from app.iot.scenes_engine import ScenesEngine
-    hub.iot = IoTNexus(db_path=os.path.join(BASE, "data", "iot", "iot_devices.db"))
+    hub.iot = IoTNexus(db_path=os.path.join(BASE, "data", "iot", "iot_devices.db"),
+                       ha_url=os.environ.get("ULTRON_HA_URL"),
+                       vault=(hub.bridge.runtime.vault
+                              if (hub.bridge and hub.bridge.available) else None))
     hub.scenes = ScenesEngine(hub.iot, sentinel=hub.sentinel,
                               persona=(hub.bridge.runtime.agent.persona
                                        if (hub.bridge and hub.bridge.available) else None))
@@ -1124,6 +1294,125 @@ async def on_startup(app: web.Application) -> None:
     _th.Thread(target=hub.watcher.loop,
                kwargs={"idle_fn": lambda: hub.sentinel.mode == "IDLE_MODE"},
                daemon=True).start()
+    # PHASE 2/3: long-running task engine + supervisor agent + recovery
+    from app.tasks.engine import TaskEngine
+    from app.agent.supervisor import (
+        CodeAnalysisWorker, DiagnosticWorker, ReportWorker,
+        SupervisorAgent, TestWorker, VerificationWorker,
+    )
+    hub.task_engine = TaskEngine(db_path=os.path.join(BASE, "data", "tasks", "tasks.db"))
+
+    def _task_event(ev: dict) -> None:
+        try:
+            asyncio.get_event_loop().create_task(hub._task_event(ev))
+        except RuntimeError:
+            pass
+
+    hub.task_engine.event_cb = _task_event
+    workers = {
+        "code_analysis": CodeAnalysisWorker(hub.code_intel),
+        "tests": TestWorker(Path(os.path.dirname(BASE))),
+        "verification": VerificationWorker(),
+        "report": ReportWorker(
+            router=(hub.bridge.runtime.router if hub.bridge and hub.bridge.available else None),
+            llm_available=hub.bridge_available_llm),
+    }
+    if hub.bridge and hub.bridge.available:
+        workers["diagnostic"] = DiagnosticWorker(hub.bridge.runtime)
+    hub.supervisor = SupervisorAgent(hub.task_engine, workers, event_cb=_task_event)
+    recovered = hub.task_engine.recover_incomplete()
+    for tid in recovered:
+        t = hub.task_engine.get(tid)
+        if t and t.get("kind") == "supervisor":
+            hub.task_engine.spawn(tid, hub.supervisor._runner)
+            await hub.on_activity(f"Task {tid} recovered and resumed", "info")
+    # PHASE 4: World Model — live environment state (current, not historical)
+    from app.world.model import WorldModel
+
+    def _world_apps():
+        try:
+            import pygetwindow as gw
+            titles = [t for t in gw.getAllTitles() if t][:20]
+            return {"available": True, "titles": titles}
+        except Exception:
+            return {"available": False}
+
+    def _world_screen():
+        try:
+            st = hub.watcher  # may not exist on headless; degrade below
+            base = {"available": True, "status": st.status()["status"],
+                    "diff": st.last_diff, "analyses": st.analyses}
+        except Exception:
+            base = {"available": False}
+        try:
+            logs = Path(BASE) / "data" / "logs"
+            shots = sorted(logs.glob("screen_*.png"), key=lambda x: x.stat().st_mtime,
+                           reverse=True) if logs.exists() else []
+            if shots:
+                base["age_s"] = max(0.0, time.time() - shots[0].stat().st_mtime)
+        except Exception:
+            pass
+        return base
+
+    def _world_task():
+        try:
+            for t in hub.task_engine.list(limit=20):
+                if t and t.get("status") in ("RUNNING", "WAITING_APPROVAL", "RECOVERING"):
+                    return {"available": True, "goal": t["goal"], "status": t["status"],
+                            "current_step": t["current_step"], "steps_total": len(t["steps"])}
+        except Exception:
+            pass
+        return {"available": False}
+
+    def _world_files():
+        try:
+            root = Path(os.path.dirname(BASE))
+            cands = []
+            for p in root.rglob("*"):
+                if not p.is_file():
+                    continue
+                if any(part in (".git", "node_modules", "data", "__pycache__", "dist",
+                                ".venv", "backups") for part in p.parts):
+                    continue
+                if p.suffix not in (".py", ".ts", ".tsx", ".json", ".md", ".bat"):
+                    continue
+                cands.append(p)
+            cands.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+            return {"available": True, "files": [str(c.relative_to(root)) for c in cands[:5]]}
+        except Exception:
+            return {"available": False}
+
+    def _world_iot():
+        try:
+            devices = hub.iot.list()
+            return {"available": True, "devices": len(devices),
+                    "active": sum(1 for d in devices if d["state"] == "on"),
+                    "last_scene": hub.scenes.last_scene}
+        except Exception:
+            return {"available": False}
+
+    def _world_events():
+        try:
+            latest = hub.notifications[0]["text"] if hub.notifications else None
+            return {"available": True, "latest": latest}
+        except Exception:
+            return {"available": False}
+
+    hub.world = WorldModel(sources={
+        "presence": lambda: (hub.presence.status() | {"confidence": getattr(hub.presence, "last_confidence", None)}
+                             if getattr(hub, "presence", None) else {"available": False}),
+        "workspace": lambda: hub.sentinel.state() if getattr(hub, "sentinel", None) else {"available": False},
+        "screen": _world_screen,
+        "task": _world_task,
+        "system": lambda: get_system_stats_dict(),
+        "apps": _world_apps,
+        "files": _world_files,
+        "iot": _world_iot,
+        "events": _world_events,
+    })
+    if hub.bridge and hub.bridge.available:
+        hub.bridge.runtime.world_context_fn = hub.world.context_for_llm
+
     # Phase-6: Master HUD collector
     from app.observability.master_hud import MasterHUDCollector
     from app.security import sovereign_privacy as _sov
@@ -1171,12 +1460,25 @@ async def on_cleanup(app: web.Application) -> None:
     for t in app.get("loops", []):
         t.cancel()
     if hub.bridge:
+        try:
+            hub.bridge.runtime.shutdown()
+        except Exception:
+            pass
         hub.bridge.stop()
     await hub.telemetry.stop()
 
 
 @web.middleware
 async def auth_middleware(req: web.Request, handler):
+    # PHASE 10: per-IP rate limit (auth handshake daha sıkı)
+    client_ip = req.remote or "unknown"
+    _tok = req.headers.get("Authorization", "").replace("Bearer ", "").strip()
+    allowed, retry_after = hub.rate_limiter.check(
+        client_ip, req.path, authenticated=bool(_tok) and _tok in hub.auth.sessions)
+    if not allowed:
+        return web.json_response(
+            {"ok": False, "error": "rate limit aşıldı"},
+            status=429, headers={"Retry-After": str(max(1, int(retry_after) + 1))})
     if hub.auth.required and (req.path.startswith("/api/") or req.path == "/ws"):
         if req.path != "/api/auth/handshake":
             token = req.headers.get("Authorization", "").replace("Bearer ", "").strip()
@@ -1237,6 +1539,7 @@ def main() -> None:
     app.router.add_post("/api/mesh/sync/push", api_mesh_push)
     app.router.add_get("/api/mesh/sync/pull", api_mesh_pull)
     app.router.add_get("/api/mesh/nodes", api_mesh_nodes)
+    app.router.add_post("/api/mesh/heartbeat", api_mesh_heartbeat)
     app.router.add_get("/api/iot/devices", api_iot_devices)
     app.router.add_post("/api/iot/device/control", api_iot_control)
     app.router.add_post("/api/iot/scene/activate", api_iot_scene)
@@ -1283,10 +1586,22 @@ def main() -> None:
     app.router.add_post("/api/task/reject", api_task_reject)
     app.router.add_post("/api/auth/handshake", api_auth_handshake)
     app.router.add_get("/api/auth/devices", api_auth_devices)
-    app.router.add_get("/api/debug/runtime", api_debug_runtime)
-    app.router.add_post("/api/debug/vision-selftest", api_debug_vision_selftest)
     app.router.add_get("/api/vision/last", api_vision_last)
     app.router.add_get("/api/vision/preview", api_vision_preview)
+    app.router.add_get("/api/tasks", api_tasks_list)
+    app.router.add_post("/api/tasks", api_tasks_create)
+    app.router.add_get("/api/tasks/{id}", api_tasks_get)
+    app.router.add_post("/api/tasks/{id}/cancel", api_tasks_cancel)
+    app.router.add_post("/api/tasks/{id}/pause", api_tasks_pause)
+    app.router.add_post("/api/tasks/{id}/approve", api_tasks_approve)
+    app.router.add_get("/api/models/health", api_models_health)
+    app.router.add_get("/api/world", api_world)
+    app.router.add_get("/api/vault", api_vault_list)
+    app.router.add_get("/api/skills", api_skills)
+    app.router.add_get("/api/voice/wake", api_wake_status)
+    app.router.add_get("/api/connectors/health", api_connectors_health)
+    app.router.add_post("/api/vault/set", api_vault_set)
+    app.router.add_post("/api/vault/delete", api_vault_delete)
     app.router.add_get("/ws", ws_handler)
     port = int(os.environ.get("ULTRON_PORT", "8000"))
     bind_host = os.environ.get("ULTRON_BIND_HOST", "127.0.0.1")
