@@ -12,7 +12,10 @@ class Executor:
                 raise RuntimeError(f"Tool not registered: {name}")
             if tool["dangerous"]:
                 self.permissions.require(name, approved=approved)
-            self.audit.write("TOOL_START", f"{name} {args}")
+            # PHASE 2: unified risk engine + self-coding boundary
+            from app.security.risk import guard as risk_guard
+            decision = risk_guard(name, args, bool(tool["dangerous"]), approved)
+            self.audit.write("TOOL_START", f"{name} risk={decision['level']} {args}")
             try:
                 result = tool["fn"](**args)
             except Exception as exc:

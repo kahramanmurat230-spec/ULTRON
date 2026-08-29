@@ -13,10 +13,11 @@ from pathlib import Path
 
 
 class CodeGen:
-    def __init__(self, root: Path, audit, notify):
+    def __init__(self, root: Path, audit, notify, sandbox=None):
         self.root = root.resolve()
         self.audit = audit
         self.notify = notify
+        self.sandbox = sandbox  # optional FilesystemSandbox (server injects)
         self.proposals: dict[str, dict] = {}
 
     # ------------------------------------------------------------ generation
@@ -108,6 +109,10 @@ class CodeGen:
                 p = (self.root / rel).resolve()
                 if self.root not in p.parents:
                     raise PermissionError(f"Patch path outside project: {rel}")
+                if self.sandbox is not None:
+                    self.sandbox.validate_write(p)  # PHASE 10: sandbox-enforced
+                from app.security.risk import SelfCodeBoundary
+                SelfCodeBoundary.check(p)  # PHASE 15: security core is untouchable
                 originals[rel] = p.read_text(encoding="utf-8", errors="replace") if p.exists() else None
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text(f["content"], encoding="utf-8")
