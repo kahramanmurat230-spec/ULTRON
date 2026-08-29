@@ -6,10 +6,13 @@ from app.emotion.emotion_engine import analyze as emotion_analyze
 from app.core.intent import classify, vision_pattern, VISION_PROMPT
 
 class Agent:
-    def __init__(self,brain,executor,memory,registry,settings,audit,tts,max_steps=8,semantic_memory=None,planner=None,vision_llm=None,adaptive=None):
+    def __init__(self,brain,executor,memory,registry,settings,audit,tts,max_steps=8,semantic_memory=None,planner=None,vision_llm=None,adaptive=None,router=None,world_fn=None,redact_fn=None):
         self.brain=brain; self.executor=executor; self.memory=memory; self.registry=registry; self.settings=settings; self.audit=audit; self.tts=tts; self.max_steps=max_steps
         self.semantic_memory=semantic_memory; self.planner=planner; self.vision_llm=vision_llm
         self.adaptive=adaptive
+        self.router=router  # PHASE 2: model router (GENERAL chat + fallback)
+        self.world_fn=world_fn  # PHASE 4: live world-state context (WorldModel)
+        self.redact_fn=redact_fn  # PHASE 10: vault-backed redaction (prompts/tool output)
         self.persona=PersonaGuard(mode=settings.get('persona_guard_mode','reframe'))
     def _persona_finalize(self, answer):
         chk=self.persona.check(answer)
@@ -214,7 +217,13 @@ class Agent:
                 args=o.get("arguments",{}); args=json.loads(args) if isinstance(args,str) else args
                 return [{"function":{"name":o["name"],"arguments":args or {}}}]
         return []
+    def _redact(self,text):
+        if self.redact_fn is None: return text
+        try: return self.redact_fn(str(text))
+        except Exception: return text
+
     def handle(self,text,approved=False):
+        text=self._redact(text)  # secrets never reach prompts/logs
         self._save("USER",text); self.audit.write("USER",text)
         # V7: emotion-aware persona (override commands + hint injection)
         if self.adaptive:
@@ -237,10 +246,20 @@ class Agent:
                 "Kısa cevap isteğinde kısa, ayrıntılı isteğinde ayrıntılı cevap ver. "
                 "İlgili uzun dönem hafıza varsa onu bağlam olarak kullan.")
         system=self.persona.compose(base, len(history)) + ("İlgili hafıza:\n"+semantic if semantic else "")
+        if callable(self.world_fn):
+            try:
+                world_block=self.world_fn()
+                if world_block: system=system+"\n"+world_block
+            except Exception: pass
         messages=[{"role":"system","content":system}]+history[-20:]+[{"role":"user","content":text}]
         last_error=None
         for _ in range(self.max_steps):
-            try: response=self.brain.chat(messages,tools=self.registry.ollama_tools(include_dangerous=True))
+            try:
+                if self.router is not None:
+                    from app.core.model_router import TaskType as _TT
+                    response=self.router.chat(_TT.GENERAL,messages,tools=self.registry.ollama_tools(include_dangerous=True))
+                else:
+                    response=self.brain.chat(messages,tools=self.registry.ollama_tools(include_dangerous=True))
             except Exception as e:
                 last_error=e; break
             msg=response.get("message",{}); calls=self._extract_tool_calls(msg)
@@ -252,9 +271,9 @@ class Agent:
                 fn=call.get("function",{}); name=fn.get("name",""); args=fn.get("arguments") or {}
                 try:
                     raw=self.executor.execute([(name,args)],approved=approved)[0]
-                    messages.append({"role":"tool","content":json.dumps({"success":True,"result":raw},ensure_ascii=False,default=str)})
+                    messages.append({"role":"tool","content":self._redact(json.dumps({"success":True,"result":raw},ensure_ascii=False,default=str))})
                 except Exception as e:
-                    last_error=e; messages.append({"role":"tool","content":json.dumps({"success":False,"error":str(e)},ensure_ascii=False)})
+                    last_error=e; messages.append({"role":"tool","content":json.dumps({"success":False,"error":self._redact(str(e))},ensure_ascii=False)})
         if last_error: answer=f"İşlemi tamamlayamadım: {last_error}"
         else: answer="Görevi güvenli adım sınırında tamamlayamadım."
         answer=self._persona_finalize(answer)

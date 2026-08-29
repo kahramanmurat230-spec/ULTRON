@@ -38,21 +38,21 @@ class Brain:
                 "Ollama API'ye bağlanılamadı. Ollama'nın çalıştığından ve modelin kurulu olduğundan emin ol."
             ) from e
 
-    def ask(self, prompt: str, system: str = "", history=None) -> str:
+    def ask(self, prompt: str, system: str = "", history=None, model=None) -> str:
         messages = [{"role": "system", "content": system}] if system else []
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": prompt})
         data = self._post("/api/chat", {
-            "model": self.model,
+            "model": model or self.model,
             "messages": messages,
             "stream": False
         })
         return data.get("message", {}).get("content", "").strip()
 
-    def chat(self, messages, tools=None):
+    def chat(self, messages, tools=None, model=None):
         payload = {
-            "model": self.model,
+            "model": model or self.model,
             "messages": messages,
             "stream": False,
         }

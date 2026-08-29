@@ -1,107 +1,143 @@
-"""Credential Vault — Fernet ile şifreli istirahat-at-rest secret deposu.
+"""Credential Vault — encrypted secret storage with redaction integration.
 
-Sözleşme (test_sandbox_vault.py + connectors kullanımı):
-- set(name, value, meta) → değer ASLA plaintext diskte durmaz (secrets.json
-  yalnız Fernet token'ları içerir)
-- get(name) → değer veya None; delete(name) → bool; list_names() → isimler
-  (değerler ASLA açığa çıkmaz)
-- redact(text) → depolanan DEĞERLER metinde geçiyorsa maskeler
-- anahtar: ULTRON_VAULT_KEY env (öncelik) yoksa .vault.key (0o600) dosyası
+- Secrets (API keys, tokens, passwords) are NEVER stored in plaintext:
+  storage is data/vault/secrets.json with Fernet-encrypted values.
+- Key material: env ULTRON_VAULT_KEY (urlsafe base64) or an auto-generated
+  key file data/vault/.vault.key with 0600 permissions. No hardcoded keys.
+- Secrets never enter: prompts, logs, audit, tool output. `redact()`
+  combines pattern masking with concrete stored values; the server wires
+  this into AuditLog, memory and agent tool-result messages.
+- There is deliberately NO API to read a secret's value back over HTTP —
+  connectors resolve credentials server-side at call time only.
 """
-from __future__ import annotations
-
+import base64
 import json
 import os
+import time
 from pathlib import Path
+
+from app.security.redaction import redact as _pattern_redact
+
+try:
+    from cryptography.fernet import Fernet, InvalidToken
+    HAVE_CRYPTO = True
+except Exception:  # pragma: no cover
+    HAVE_CRYPTO = False
+
+
+class VaultUnavailable(RuntimeError):
+    pass
 
 
 class CredentialVault:
-    KEY_FILE = ".vault.key"
-    STORE_FILE = "secrets.json"
-
-    def __init__(self, dir_path: str = "data/security/vault"):
+    def __init__(self, dir_path="data/vault", key_env="ULTRON_VAULT_KEY", audit=None):
         self.dir = Path(dir_path)
         self.dir.mkdir(parents=True, exist_ok=True)
-        self._fernet = self._load_or_create_key()
+        self.store_path = self.dir / "secrets.json"
+        self.key_path = self.dir / ".vault.key"
+        self.audit = audit
+        if not HAVE_CRYPTO:
+            self._fernet = None
+            return
+        key = os.environ.get(key_env, "").strip()
+        if key:
+            self._fernet = Fernet(key.encode())
+        else:
+            self._fernet = Fernet(self._load_or_create_key())
 
     # ------------------------------------------------------------ key
     def _load_or_create_key(self):
-        from cryptography.fernet import Fernet
-        env_key = os.environ.get("ULTRON_VAULT_KEY", "").strip()
-        if env_key:
-            return Fernet(env_key.encode("utf-8"))
-        key_path = self.dir / self.KEY_FILE
-        if key_path.exists():
-            key = key_path.read_text(encoding="utf-8").strip()
-        else:
-            key = Fernet.generate_key().decode("utf-8")
-            key_path.write_text(key, encoding="utf-8")
-            try:
-                os.chmod(key_path, 0o600)   # yalnız sahip okur
-            except OSError:
-                pass
-        return Fernet(key.encode("utf-8"))
-
-    # ------------------------------------------------------------ store
-    def _store_path(self) -> Path:
-        return self.dir / self.STORE_FILE
-
-    def _read_store(self) -> dict:
-        p = self._store_path()
-        if not p.exists():
-            return {"secrets": {}}
+        if self.key_path.exists():
+            return self.key_path.read_text(encoding="utf-8").strip()
+        key = Fernet.generate_key().decode("utf-8")
+        self.key_path.write_text(key, encoding="utf-8")
         try:
-            return json.loads(p.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001 — bozuk depo boş sayılır (güvenli taraf)
-            return {"secrets": {}}
+            os.chmod(self.key_path, 0o600)
+        except OSError:
+            pass
+        return key
 
-    def _write_store(self, data: dict) -> None:
-        tmp = self._store_path().with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1),
-                       encoding="utf-8")
-        os.replace(tmp, self._store_path())
+    def _require(self):
+        if not HAVE_CRYPTO or self._fernet is None:
+            raise VaultUnavailable(
+                "Credential vault kullanılamıyor (cryptography kurulu değil veya anahtar yok).")
+
+    # ------------------------------------------------------------ ops
+    def _load(self) -> dict:
+        if not self.store_path.exists():
+            return {}
         try:
-            os.chmod(self._store_path(), 0o600)
+            return json.loads(self.store_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _save(self, data: dict) -> None:
+        tmp = self.store_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=1), encoding="utf-8")
+        os.replace(tmp, self.store_path)
+        try:
+            os.chmod(self.store_path, 0o600)
         except OSError:
             pass
 
-    # ------------------------------------------------------------ api
-    def set(self, name: str, value: str, meta: str | None = None) -> None:
-        if not name or value is None:
-            raise ValueError("name/value zorunlu")
-        data = self._read_store()
-        token = self._fernet.encrypt(str(value).encode("utf-8")).decode(
-            "utf-8")
-        data["secrets"][name] = {"v": token, "meta": meta or ""}
-        self._write_store(data)
+    def set(self, name: str, value: str, meta: str = "") -> dict:
+        self._require()
+        name = str(name).strip()
+        if not name or not value:
+            raise ValueError("name and value required")
+        data = self._load()
+        data[name] = {"cipher": self._fernet.encrypt(str(value).encode()).decode(),
+                      "meta": str(meta)[:100], "ts": time.time()}
+        self._save(data)
+        if self.audit:
+            self.audit.write("VAULT_SET", f"name={name} meta={meta[:40]}")  # value NEVER logged
+        return {"ok": True, "name": name}
 
     def get(self, name: str) -> str | None:
-        entry = self._read_store()["secrets"].get(name)
+        """Server-side only. There is no HTTP endpoint that returns values."""
+        self._require()
+        entry = self._load().get(str(name))
         if not entry:
             return None
         try:
-            return self._fernet.decrypt(entry["v"].encode("utf-8")
-                                        ).decode("utf-8")
-        except Exception:  # noqa: BLE001 — yanlış anahtar → yok say (RED tarafı)
+            return self._fernet.decrypt(entry["cipher"].encode()).decode()
+        except InvalidToken:
             return None
 
     def delete(self, name: str) -> bool:
-        data = self._read_store()
-        if name in data["secrets"]:
-            del data["secrets"][name]
-            self._write_store(data)
+        data = self._load()
+        if str(name) in data:
+            del data[str(name)]
+            self._save(data)
+            if self.audit:
+                self.audit.write("VAULT_DELETE", f"name={name}")
             return True
         return False
 
-    def list_names(self) -> list[str]:
-        return sorted(self._read_store()["secrets"].keys())
+    def list_names(self) -> list[dict]:
+        return [{"name": n, "meta": e.get("meta", ""), "ts": e.get("ts")}
+                for n, e in sorted(self._load().items())]
+
+    def all_values(self) -> tuple:
+        """Concrete secret values — used ONLY to seed redaction. Server-side."""
+        if not HAVE_CRYPTO or self._fernet is None:
+            return ()
+        out = []
+        for e in self._load().values():
+            try:
+                v = self._fernet.decrypt(e["cipher"].encode()).decode()
+                if len(v) >= 4:
+                    out.append(v)
+            except Exception:
+                continue
+        return tuple(out)
 
     def redact(self, text: str) -> str:
-        """Depolanan değerler metinde geçiyorsa maskeler (plaintext sızıntı
-        önleme — secret değerler log/trace kanallarına düşmez)."""
-        out = text or ""
-        for name in self.list_names():
-            val = self.get(name)
-            if val:
-                out = out.replace(val, "***REDACTED***")
-        return out
+        """Pattern redaction + concrete stored secret values."""
+        return _pattern_redact(text, extra_values=self.all_values())
+
+    def health(self) -> dict:
+        return {"available": bool(HAVE_CRYPTO and self._fernet),
+                "entries": len(self._load()),
+                "key_source": "env" if os.environ.get("ULTRON_VAULT_KEY") else
+                              ("keyfile" if HAVE_CRYPTO else None)}

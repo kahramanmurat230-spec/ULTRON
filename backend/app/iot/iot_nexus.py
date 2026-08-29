@@ -6,6 +6,7 @@ Natural-language fuzzy matcher maps "ışığı aç / masayı yak / klimayı 24 
 to (device_id, intent, value).  Unreachable drivers NEVER fake success.
 """
 import json
+import os
 import re
 import sqlite3
 import urllib.request
@@ -23,8 +24,8 @@ class IoTNexus:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.ha_url = ha_url
         self.ha_token = ha_token
-        # PHASE: secret ARGÜMANDAN DEĞİL vault'tan çözülür (plaintext DB yok)
-        self.vault = vault
+        self.vault = vault  # PHASE 10/11: HomeAssistant token'ı vault'tan çöz
+        self.ha_url = ha_url or os.environ.get("ULTRON_HA_URL")
         with sqlite3.connect(self.path) as db:
             db.execute("""CREATE TABLE IF NOT EXISTS iot_devices(
                 device_id TEXT PRIMARY KEY, name TEXT, domain TEXT,
@@ -50,28 +51,15 @@ class IoTNexus:
                        (device_id, name, domain, "off", None, room, driver, address))
         return self.get(device_id)
 
-    def list(self, include_simulated: bool = True):
+    def list(self, include_simulated=True):
         with sqlite3.connect(self.path) as db:
             rows = db.execute("SELECT device_id,name,domain,state,value,room,driver,address"
                               " FROM iot_devices").fetchall()
-        out = []
-        for r in rows:
-            d = {"device_id": r[0], "name": r[1], "domain": r[2], "state": r[3],
-                 "value": r[4], "room": r[5], "driver": r[6], "address": r[7],
-                 # PHASE: mock sürücü = simülasyon, gerçek cihaz ASLA mock
-                 # etiketlenmez (sahte başarı YASAK)
-                 "is_simulated": r[6] == "mock"}
-            if include_simulated or not d["is_simulated"]:
-                out.append(d)
-        return out
-
-    def _ha_token(self) -> str | None:
-        """Token önceliği: vault (şifreli) → ctor arg'ı → None."""
-        if self.vault is not None:
-            t = self.vault.get("homeassistant_token")
-            if t:
-                return t
-        return self.ha_token or None
+        out = [{"device_id": r[0], "name": r[1], "domain": r[2], "state": r[3],
+                "value": r[4], "room": r[5], "driver": r[6], "address": r[7],
+                # mock cihaz = simülasyon; gerçek cihazlar homeassistant/http driver
+                "is_simulated": r[6] == "mock"} for r in rows]
+        return out if include_simulated else [d for d in out if not d["is_simulated"]]
 
     def get(self, device_id):
         for d in self.list():
@@ -80,9 +68,20 @@ class IoTNexus:
         return None
 
     # ------------------------------------------------------------ control
+    def _ha_token(self):
+        """Vault'tan homeassistant_token; yoksa kurulum argümanı."""
+        if self.vault is not None:
+            try:
+                t = self.vault.get("homeassistant_token")
+                if t:
+                    return t
+            except Exception:
+                pass
+        return self.ha_token
+
     def _dispatch(self, dev, action, value):
         if dev["driver"] == "mock":
-            return {"ok": True, "driver": "mock"}
+            return {"ok": True, "driver": "mock", "is_simulated": True}
         if dev["driver"] == "homeassistant":
             if not self.ha_url:
                 return {"ok": False, "error": "HA base URL yok", "driver": "homeassistant"}
@@ -95,7 +94,7 @@ class IoTNexus:
                         "temperature" if dev["domain"] == "climate"
                         else "brightness_pct": value}
             req = urllib.request.Request(url, data=json.dumps(body).encode(),
-                                         headers={"Authorization": f"Bearer {self.ha_token or ''}",
+                                         headers={"Authorization": f"Bearer {self._ha_token() or ''}",
                                                   "Content-Type": "application/json"})
             try:
                 with urllib.request.urlopen(req, timeout=3) as r:
@@ -118,7 +117,6 @@ class IoTNexus:
         if not dev:
             return {"ok": False, "error": f"unknown device: {device_id}"}
         res = self._dispatch(dev, action, value)
-        res["is_simulated"] = dev["driver"] == "mock"  # dürüst etiket
         if res.get("ok"):
             state = "on" if action in ("turn_on",) else "off" if action == "turn_off" \
                 else ("off" if dev["state"] == "on" else "on") if action == "toggle" else dev["state"]
@@ -172,7 +170,7 @@ class IoTNexus:
         if self.ha_url:
             try:
                 req = urllib.request.Request(self.ha_url.rstrip("/") + "/api/states",
-                                             headers={"Authorization": f"Bearer {self.ha_token or ''}"})
+                                             headers={"Authorization": f"Bearer {self._ha_token() or ''}"})
                 with urllib.request.urlopen(req, timeout=3) as r:
                     states = json.loads(r.read())
                 for s in states[:50]:

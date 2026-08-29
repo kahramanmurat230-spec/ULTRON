@@ -43,6 +43,8 @@ class CodeAgent:
                 p=(self.root/item['path']).resolve()
                 if self.root not in p.parents:
                     raise PermissionError('Proje dışına patch yazılamaz.')
+                from app.security.risk import SelfCodeBoundary
+                SelfCodeBoundary.check(p)  # security core: never self-patched
                 originals[item['path']] = p.read_text(encoding='utf-8',errors='replace') if p.exists() else None
                 p.parent.mkdir(parents=True,exist_ok=True)
                 p.write_text(item['content'],encoding='utf-8')

@@ -3,7 +3,8 @@ from pathlib import Path
 from datetime import datetime
 
 class Memory:
-    def __init__(self, path="data/memory/ultron.db"):
+    def __init__(self, path="data/memory/ultron.db", redact_fn=None):
+        self.redact_fn = redact_fn  # optional: vault-backed redaction on write
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self.path) as db:
@@ -23,6 +24,9 @@ class Memory:
 
     def add(self, kind, content):
         import time as _t
+        if self.redact_fn is not None:
+            try: content = self.redact_fn(str(content))
+            except Exception: pass
         iso = datetime.now().isoformat(timespec="seconds")
         with sqlite3.connect(self.path) as db:
             try:

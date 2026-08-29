@@ -18,7 +18,14 @@ class Executor:
                 SelfCodeBoundary.check(args["path"])
             if tool["dangerous"]:
                 self.permissions.require(name, approved=approved)
-            risk = "high" if tool["dangerous"] else "low"
+            # MERGE UNION — iki güvenlik katmani birlikte (talimat: R risk_guard
+            # + L path-boundary ASLA kaybolmez):
+            #   1) L: güvenlik çekirdeğine yazma yolu — onay olsa bile RED
+            #      (boundary, approval'dan ÜSTTÜR; onay = core bypass olamaz)
+            #   2) R: birleşik 5-seviye risk motoru (risk.guard) audit'e taşır
+            from app.security.risk import guard as risk_guard
+            decision = risk_guard(name, args, bool(tool["dangerous"]), approved)
+            risk = decision["level"]
             self.audit.write("TOOL_START", f"{name} risk={risk} {args}")
             try:
                 result = tool["fn"](**args)

@@ -5,25 +5,28 @@ import time
 
 STATES = ["IDLE", "LISTENING", "THINKING", "PLANNING", "EXECUTING", "VERIFYING", "WAITING_APPROVAL", "DONE", "ERROR"]
 
-
-# Salt-okunur shell allowlist (approval gate): ilk kelimeye göre aile.
-# Listedeki komutlar onay istemez; listede OLMAYAN her shell komudu
-# request_approval akışına düşer (callback yoksa RED).
+# Read-only / build-tool shell commands that may run without approval.
+# Anything else routed through the `run <cmd>` intent requires explicit
+# server-side approval (WAITING_APPROVAL -> /api/task/approve).
 SAFE_SHELL_COMMANDS = (
     "echo", "dir", "ver", "whoami", "hostname", "date", "time",
-    "tasklist", "ipconfig", "python --version", "node --version",
-    "npm --version", "git --version", "git status", "git log",
-    "pip --version", "pip list",
+    "tasklist", "ipconfig",
+    "python --version", "python -V", "node --version", "npm --version",
+    "npm run test", "npm run build", "git status", "git log", "git diff",
+    "git show", "pip list",
 )
 
 
+def shell_is_safe(command: str) -> bool:
+    c = (command or "").strip().lower()
+    return any(c == s or c.startswith(s + " ") for s in SAFE_SHELL_COMMANDS)
+
+
 class Agent:
-    def __init__(self, broadcast, tools, memory, telemetry, get_ai_status, on_activity, fallback=None, request_approval=None) -> None:
+    def __init__(self, broadcast, tools, memory, telemetry, get_ai_status, on_activity,
+                 fallback=None, request_approval=None) -> None:
         self.broadcast = broadcast
         self.tools = tools
-        # approval gate köprüsü: fn(text, risks) -> task-id (senkron);
-        # yoksa riskli shell RED edilir (sessizce çalıştırılmaz)
-        self.request_approval = request_approval
         self.memory = memory
         self.telemetry = telemetry
         self.get_ai_status = get_ai_status
@@ -31,6 +34,7 @@ class Agent:
         self.fallback = fallback  # V16 bridge: GENERAL_CONVERSATION routing
         self.vision_check = None  # bridge.is_vision_flow — must run BEFORE tier-1
         self.composite = None  # bridge.run_orchestrated — Agent 2.0 planner BEFORE tier-1
+        self.request_approval = request_approval  # (text, risks) -> task_id | None
         self.state = "IDLE"
         self.busy = False
         self._idle_task: asyncio.Task | None = None
@@ -135,30 +139,25 @@ class Agent:
                 await asyncio.sleep(0.25)
             elif kind == "terminal":
                 cmd = intent["arg"]
-                allowlisted = any(cmd == c or cmd.startswith(c + " ")
-                                  for c in SAFE_SHELL_COMMANDS)
-                if not allowlisted and not approved:
-                    # riskli shell: onay ŞART (bypass YASAK)
+                if not approved and not shell_is_safe(cmd):
+                    # SECURITY: arbitrary shell never runs on a client-supplied
+                    # flag. Request server-side approval first (pending task).
                     if self.request_approval is not None:
-                        risks = ["non-allowlisted shell command"]
+                        risks = [f"shell:{cmd[:60]}"]
                         tid = self.request_approval(text, risks)
-                        await self.set_state("WAITING_APPROVAL",
-                                             f"approval pending ({tid})")
-                        result = {"ok": True,
-                                  "result": "waiting-approval",
-                                  "approval_task": tid}
-                    else:
-                        await self.set_state("ERROR",
-                                             "shell command requires "
-                                             "approval (no callback)")
-                        result = {"ok": False, "error":
-                                  "approval required for non-allowlisted "
-                                  "shell command"}
-                else:
-                    await self.set_state("EXECUTING", f"$ {cmd[:60]}")
-                    result = await self.tools.execute("terminal", cmd)
-                    await self.set_state("VERIFYING", "Checking exit code…")
-                    await asyncio.sleep(0.2)
+                        if tid:
+                            await self.set_state(
+                                "WAITING_APPROVAL",
+                                f"Shell komutu onay gerektiriyor (task {tid}): {cmd[:60]}")
+                            await self._schedule_idle()
+                            return {"ok": True, "result": "waiting-approval", "task_id": tid}
+                    await self.set_state("ERROR", f"Confirmation required for shell: {cmd[:60]}")
+                    await self._schedule_idle()
+                    return {"ok": False, "error": "confirmation required for shell command"}
+                await self.set_state("EXECUTING", f"$ {cmd[:60]}")
+                result = await self.tools.execute("terminal", cmd)
+                await self.set_state("VERIFYING", "Checking exit code…")
+                await asyncio.sleep(0.2)
             elif kind == "system_check":
                 await self.set_state("EXECUTING", "Sampling CPU / RAM / DISK / NET…")
                 snap = self.telemetry.snapshot()

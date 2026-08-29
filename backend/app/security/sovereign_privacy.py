@@ -8,6 +8,10 @@ import time
 
 _LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1", "0.0.0.0")
 
+# Engines that synthesize ON THIS MACHINE. edge-tts streams from Microsoft's
+# cloud service, so it is real neural TTS but NOT local — the audit must say so.
+LOCAL_TTS_BACKENDS = ("kokoro", "pykokoro")
+
 state = {"sovereign_mode": False, "denied": []}
 
 
@@ -59,7 +63,11 @@ def _tts_is_local(backend: str | None) -> bool:
 def audit(llm_host: str, tts_backend: str | None, stt_local: bool,
           ollama_connected: bool) -> dict:
     llm_local = is_local(llm_host or "")
-    tts_local = _tts_is_local(tts_backend)
+    # BİRLEŞİK (merge): iki dürüstlük katmani birlikte — allowlist (R)
+    # VE bulut-önek denylist (L). Yerel denmesi için ikisi de geçmeli.
+    tts_local = (bool(tts_backend)
+                 and tts_backend in LOCAL_TTS_BACKENDS
+                 and _tts_is_local(tts_backend))
     return {
         "sovereign_mode": state["sovereign_mode"],
         "llm": {"endpoint": llm_host, "local": llm_local,

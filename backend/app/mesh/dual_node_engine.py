@@ -21,26 +21,24 @@ class NodeRegistry:
         self.now = now or time.time
         self.nodes = {"ultron-pc": {"id": "ultron-pc", "role": "NODE_PC",
                                     "version": "17.1", "last_seen": self.now(),
-                                    "online": True,
-                                    "declared_caps": []}}
+                                    "online": True}}
         self.tokens = {}  # node_id -> auth token issued at handshake
 
     def handshake(self, node_id: str, role: str, version: str, auth_ok: bool,
                   caps: list | None = None) -> dict:
+        """caps: mobil düğümün BEYAN ettiği yetenekler (camera/microphone/
+        notifications/presence/remote_commands...). Beyan kaydedilir ama
+        güvenilmez olarak işaretlenir — doğrulama düğümün kendisinden gelir."""
         if not auth_ok:
             return {"ok": False, "error": "unauthorized node — token gerekli"}
         if role not in NODE_ROLES:
             return {"ok": False, "error": f"unknown role: {role}"}
-        # PHASE: capability declaration — düğüm kendi yeteneklerini beyan
-        # eder; rol tabanı KORUNUR (beyanlar eklenir, silinmez/inikte edilmez)
-        base = list(NODE_ROLES[role]["caps"])
-        declared = [c for c in (caps or [])
-                    if isinstance(c, str) and c and c not in base]
+        declared = [str(c)[:40] for c in (caps or [])][:20]  # PHASE 14
         self.nodes[node_id] = {"id": node_id, "role": role, "version": version,
                                "last_seen": self.now(), "online": True,
                                "declared_caps": declared}
         return {"ok": True, "node_id": node_id, "role": role,
-                "caps": base,
+                "caps": NODE_ROLES[role]["caps"],
                 "declared_caps_accepted": declared,
                 "rules_policy": "sha-sealed-no-merge"}
 
@@ -60,10 +58,9 @@ class NodeRegistry:
             n["online"] = online
             out.append({"id": n["id"], "role": n["role"], "version": n["version"],
                         "online": online,
-                        "last_seen": n["last_seen"],
-                        "caps": list(NODE_ROLES[n["role"]]["caps"])
-                                + list(n.get("declared_caps", [])),
-                        "declared_caps": list(n.get("declared_caps", []))})
+                        "caps": list(NODE_ROLES.get(n["role"], {}).get("caps", ())),
+                        "declared_caps": n.get("declared_caps", []),
+                        "last_seen": n["last_seen"]})
         return out
 
     def pc_online(self) -> bool:
