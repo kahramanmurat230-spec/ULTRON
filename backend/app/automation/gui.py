@@ -1,5 +1,33 @@
 import time
 class GUIAutomation:
+    @staticmethod
+    def find_text_in_elements(elements, query):
+        """OCR/DOM elementleri içinde metin ara (PHASE: vision-anchored).
+
+        Sıralama kuralı: 1) exact match (case-insens) her zaman substring'ten
+        üstün; 2) eşitlikte en yüksek OCR conf; 3) substring en son.
+        Bulunamazsa None (dürüst başarısızlık)."""
+        q = (query or "").strip().lower()
+        if not q:
+            return None
+        best = None
+        best_key = None
+        for el in elements or []:
+            t = str(el.get("text", "")).strip()
+            tl = t.lower()
+            if not tl:
+                continue
+            if tl == q:
+                key = (2, float(el.get("conf", 0.0)))
+            elif q in tl:
+                key = (1, float(el.get("conf", 0.0)))
+            else:
+                continue
+            if best_key is None or key > best_key:
+                best, best_key = el, key
+        return best
+
+
     def _pyautogui(self):
         try: import pyautogui; return pyautogui
         except ImportError as e: raise RuntimeError('GUI otomasyonu için pyautogui kurulmalı.') from e

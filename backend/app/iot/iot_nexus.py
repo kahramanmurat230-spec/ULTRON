@@ -18,11 +18,13 @@ TOGGLE_WORDS = ("değiştir", "toggle")
 
 class IoTNexus:
     def __init__(self, db_path="data/iot/iot_devices.db",
-                 ha_url=None, ha_token=None):
+                 ha_url=None, ha_token=None, vault=None):
         self.path = Path(db_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.ha_url = ha_url
         self.ha_token = ha_token
+        # PHASE: secret ARGÜMANDAN DEĞİL vault'tan çözülür (plaintext DB yok)
+        self.vault = vault
         with sqlite3.connect(self.path) as db:
             db.execute("""CREATE TABLE IF NOT EXISTS iot_devices(
                 device_id TEXT PRIMARY KEY, name TEXT, domain TEXT,
@@ -48,12 +50,28 @@ class IoTNexus:
                        (device_id, name, domain, "off", None, room, driver, address))
         return self.get(device_id)
 
-    def list(self):
+    def list(self, include_simulated: bool = True):
         with sqlite3.connect(self.path) as db:
             rows = db.execute("SELECT device_id,name,domain,state,value,room,driver,address"
                               " FROM iot_devices").fetchall()
-        return [{"device_id": r[0], "name": r[1], "domain": r[2], "state": r[3],
-                 "value": r[4], "room": r[5], "driver": r[6], "address": r[7]} for r in rows]
+        out = []
+        for r in rows:
+            d = {"device_id": r[0], "name": r[1], "domain": r[2], "state": r[3],
+                 "value": r[4], "room": r[5], "driver": r[6], "address": r[7],
+                 # PHASE: mock sürücü = simülasyon, gerçek cihaz ASLA mock
+                 # etiketlenmez (sahte başarı YASAK)
+                 "is_simulated": r[6] == "mock"}
+            if include_simulated or not d["is_simulated"]:
+                out.append(d)
+        return out
+
+    def _ha_token(self) -> str | None:
+        """Token önceliği: vault (şifreli) → ctor arg'ı → None."""
+        if self.vault is not None:
+            t = self.vault.get("homeassistant_token")
+            if t:
+                return t
+        return self.ha_token or None
 
     def get(self, device_id):
         for d in self.list():
@@ -100,6 +118,7 @@ class IoTNexus:
         if not dev:
             return {"ok": False, "error": f"unknown device: {device_id}"}
         res = self._dispatch(dev, action, value)
+        res["is_simulated"] = dev["driver"] == "mock"  # dürüst etiket
         if res.get("ok"):
             state = "on" if action in ("turn_on",) else "off" if action == "turn_off" \
                 else ("off" if dev["state"] == "on" else "on") if action == "toggle" else dev["state"]

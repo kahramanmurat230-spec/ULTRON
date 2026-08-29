@@ -101,7 +101,13 @@ class CodeGen:
         if prop["status"] != "WAITING_APPROVAL":
             return {"ok": False, "error": f"proposal already {prop['status']}"}
         self.audit.write("CODEGEN_APPROVAL", f"{pid} APPROVE&APPLY")
+        from app.security.risk import SelfCodeBoundary
+        # PHASE: güvenlik çekirdeğine patch ASLA uygulanmaz — try DIŞINDA:
+        # PermissionError rollback akışına GİRMEZ, doğrudan RED
+        for f in prop["files"]:
+            SelfCodeBoundary.check(str(f.get("path", "")))
         originals = {}
+        backup_dir = self.root / "data" / "backups" / "codegen" / pid
         try:
             for f in prop["files"]:
                 rel = str(f.get("path", ""))
@@ -109,6 +115,11 @@ class CodeGen:
                 if self.root not in p.parents:
                     raise PermissionError(f"Patch path outside project: {rel}")
                 originals[rel] = p.read_text(encoding="utf-8", errors="replace") if p.exists() else None
+                # PHASE: restore point — mevcut içerik backup'a GERÇEK yazılır
+                if originals[rel] is not None:
+                    bpath = backup_dir / rel
+                    bpath.parent.mkdir(parents=True, exist_ok=True)
+                    bpath.write_text(originals[rel], encoding="utf-8")
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text(f["content"], encoding="utf-8")
             results = await run_tests(quick=True)
@@ -118,7 +129,7 @@ class CodeGen:
             prop["status"] = "APPLIED"
             self.audit.write("CODEGEN_APPLIED", f"{pid} tests=PASS")
             self.notify("codegen", f"Patch {pid} applied — all tests passed.", "success", force=True)
-            return {"ok": True, "tests": results}
+            return {"ok": True, "tests": results, "backup_dir": str(backup_dir)}
         except Exception as e:  # noqa: BLE001
             for rel, orig in originals.items():
                 p = self.root / rel
@@ -129,7 +140,8 @@ class CodeGen:
             prop["status"] = "ROLLED_BACK"
             self.audit.write("CODEGEN_ROLLBACK", f"{pid} {e}")
             self.notify("codegen", f"Patch {pid} failed tests → rolled back.", "error", force=True)
-            return {"ok": False, "error": str(e), "rolled_back": True}
+            return {"ok": False, "error": str(e), "rolled_back": True,
+                    "backup_dir": str(backup_dir)}
 
     def reject(self, pid: str) -> dict:
         prop = self.proposals.get(pid)
