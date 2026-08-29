@@ -35,10 +35,26 @@ class UltronRuntime:
         # V15.1 integration: per-request approval flag (set by the bridge).
         # self_repair(apply=True) and any PermissionManager-gated tool honour it.
         self.approved=False
-        self.memory=Memory(); self.semantic_memory=SemanticMemory(self.memory); self.audit=AuditLog(); self.permissions=PermissionManager(self.settings)
+        # PHASE 10: credential vault + filesystem sandbox (before tools/memory)
+        from app.security.vault import CredentialVault
+        from app.security.sandbox import FilesystemSandbox, sandboxed_read_text, sandboxed_write_text, sandboxed_list_directory, sandboxed_find_files
+        self.vault=CredentialVault(audit=None)
+        self._browser_agent=None  # lazy: real Playwright BrowserAgent (PHASE 8)
+        try:
+            from app.voice.wake import WakeWordManager
+            self.wake_manager=WakeWordManager(self.settings,vault=self.vault)
+        except Exception:
+            self.wake_manager=None
+        self.sandbox=FilesystemSandbox(self.settings, workspace_root=str(Path.cwd()))
+        self.memory=Memory(redact_fn=self.vault.redact); self.semantic_memory=SemanticMemory(self.memory); self.audit=AuditLog(extra_values_fn=self.vault.all_values); self.permissions=PermissionManager(self.settings)
         self.registry=ToolRegistry(); self.brain=Brain(self.settings); self.tts=TextToSpeech()
+        # PHASE 2: model router (capability registry + fallback + health)
+        from app.core.model_router import ModelRouter
+        self._models_cache={"ts":0.0,"models":[]}
+        self.router=ModelRouter(self.brain,self.settings,self._cached_models)
         self.vision_llm=VisionLLM(self.brain,self.settings); self.gui=GUIAutomation(); self.code_agent=CodeAgent(self.brain,self.root); self.code_intel=CodeIntel(str(self.root)); self._register_tools()
         self.executor=Executor(self.registry,self.permissions,self.audit)
+        if getattr(self,'skills',None) is not None: self.skills.executor=self.executor  # PHASE 9: onay kapısı executor üzerinden
         self.planner=Planner(self.brain,self.registry)
         # V7: emotion + semantic v2 (before Agent — it consumes adaptive)
         from app.agent.adaptive_persona import AdaptivePersona
@@ -47,9 +63,22 @@ class UltronRuntime:
         self.adaptive=AdaptivePersona()
         self.emotion_log=EmotionLog()
         self.semv2=SemanticMemoryV2(self.memory)
-        self.agent=Agent(self.brain,self.executor,self.memory,self.registry,self.settings,self.audit,self.tts,semantic_memory=self.semantic_memory,planner=self.planner,vision_llm=self.vision_llm,adaptive=self.adaptive)
+        self.world_context_fn=None  # PHASE 4: set by the server (WorldModel.context_for_llm)
+        self.agent=Agent(self.brain,self.executor,self.memory,self.registry,self.settings,self.audit,self.tts,semantic_memory=self.semantic_memory,planner=self.planner,vision_llm=self.vision_llm,adaptive=self.adaptive,router=self.router,world_fn=lambda:self.world_context_fn,redact_fn=self.vault.redact)
         self.live_voice=LiveVoice(self.agent,self.tts,self.settings)
         self.proactive=ProactiveMonitor(self.settings,self._proactive_event)
+
+    def _cached_models(self):
+        """Installed-model probe with a 30s TTL (router must not hammer /api/tags)."""
+        import time as _t
+        now=_t.time()
+        if now-self._models_cache["ts"]>30:
+            try:
+                self._models_cache["models"]=(ollama_status(self.brain.base_url,self.brain.model) or {}).get("models") or []
+            except Exception:
+                self._models_cache["models"]=[]
+            self._models_cache["ts"]=now
+        return self._models_cache["models"]
 
     def self_diagnostic(self):
         """Run a read-only health scan and classify only real errors."""
@@ -80,6 +109,7 @@ class UltronRuntime:
             "memory": self.memory is not None,
             "semantic_memory": self.semantic_memory is not None,
             "planner": self.planner is not None,
+            "model_router": self.router is not None,
             "neural_voice": self.tts.backend() == "edge-tts-neural",
             "vision": self.vision_llm is not None,
             "proactive": self.proactive is not None,
@@ -157,13 +187,47 @@ class UltronRuntime:
         reg.register('open_url',open_url,'URLyi Chrome ile açar.',{'type':'object','properties':{'url':{'type':'string'}},'required':['url']})
         reg.register('search_web',search_web,'Web araması açar.',{'type':'object','properties':{'query':{'type':'string'}},'required':['query']})
         reg.register('calculate',calculate,'Güvenli matematik hesaplar.',{'type':'object','properties':{'text':{'type':'string'}},'required':['text']})
-        reg.register('list_directory',list_directory,'Klasör içeriğini listeler.',{'type':'object','properties':{'root':{'type':'string'}},'required':['root']})
-        reg.register('find_files',find_files,'Dosya arar.',{'type':'object','properties':{'root':{'type':'string'},'pattern':{'type':'string'}},'required':['root','pattern']})
+        reg.register('list_directory',lambda root: sandboxed_list_directory(self.sandbox, root),'Klasör içeriğini listeler (sandbox içinde).',{'type':'object','properties':{'root':{'type':'string'}},'required':['root']})
+        reg.register('find_files',lambda root,pattern: sandboxed_find_files(self.sandbox, root, pattern),'Dosya arar (sandbox içinde).',{'type':'object','properties':{'root':{'type':'string'},'pattern':{'type':'string'}},'required':['root','pattern']})
+        # ---- Browser Agent (PHASE 8) — real Playwright-backed browsing ----
+        br=lambda: self._get_browser()
+        reg.register('browser_navigate',lambda url: br().navigate(url),'URL adresine gider, baslik/durum doner (gercek tarayıcı).',{'type':'object','properties':{'url':{'type':'string'}},'required':['url']})
+        reg.register('browser_read',lambda selector=None,limit=5000: br().read_text(selector,limit),'Açık sayfanın metnini okur (selector opsiyonel).',{'type':'object','properties':{'selector':{'type':'string'},'limit':{'type':'number'}},'required':[]})
+        reg.register('browser_find',lambda selector=None,text=None,limit=10: br().find_elements(selector,text,limit),'Sayfada element bulur (selector veya text).',{'type':'object','properties':{'selector':{'type':'string'},'text':{'type':'string'},'limit':{'type':'number'}},'required':[]})
+        reg.register('browser_screenshot',lambda path=None: br().screenshot(path),'Sayfa ekran görüntüsü alır.',{'type':'object','properties':{'path':{'type':'string'}},'required':[]})
+        reg.register('browser_verify',lambda url_contains=None,title_contains=None,selector_exists=None,text_contains=None: br().verify(url_contains,title_contains,selector_exists,text_contains),'Sayfayı gözlemleyip beklentileri doğrular (OBSERVE+VERIFY).',{'type':'object','properties':{'url_contains':{'type':'string'},'title_contains':{'type':'string'},'selector_exists':{'type':'string'},'text_contains':{'type':'string'}},'required':[]})
+        reg.register('browser_click',lambda selector: br().click(selector),'Sayfadaki elemente tıklar; onay gerekir (gerçek tarayıcı eylemi).',{'type':'object','properties':{'selector':{'type':'string'}},'required':['selector']},dangerous=True)
+        reg.register('browser_type',lambda selector,text,press_enter=False: br().type(selector,text,press_enter),'Alanı doldurur (opsiyonel Enter); onay gerekir.',{'type':'object','properties':{'selector':{'type':'string'},'text':{'type':'string'},'press_enter':{'type':'boolean'}},'required':['selector','text']},dangerous=True)
+        reg.register('browser_select',lambda selector,value: br().select(selector,value),'Dropdown seçer; onay gerekir.',{'type':'object','properties':{'selector':{'type':'string'},'value':{'type':'string'}},'required':['selector','value']},dangerous=True)
+        # ---- Computer Use (PHASE 8): process inspection + system settings ----
+        from app.tools.system_tools import process_list,process_info,process_kill,system_settings_view
+        reg.register('process_list',lambda sort='cpu',limit=30,name=None: process_list(sort,limit,name),'Süreç listeler (cpu/bellek sıralı, gerçek psutil).',{'type':'object','properties':{'sort':{'type':'string'},'limit':{'type':'number'},'name':{'type':'string'}},'required':[]})
+        reg.register('process_info',lambda pid: process_info(pid),'Süreç detayı (cmdline, bağlantı sayısı, bellek).',{'type':'object','properties':{'pid':{'type':'number'}},'required':['pid']})
+        reg.register('process_kill',lambda pid: process_kill(pid),'Süreci öldürür; KRİTİK — onay gerekir.',{'type':'object','properties':{'pid':{'type':'number'}},'required':['pid']},dangerous=True)
+        reg.register('system_settings_view',lambda: system_settings_view(),'Sistem ayarlarını salt-okunur listeler (startup öğeleri dahil).',{'type':'object','properties':{},'required':[]})
+        # ---- Connectors (PHASE 9) — vault-backed, gerçek HTTP ----
+        from app.connectors import WeatherConnector,CalendarConnector
+        self._weather=WeatherConnector(vault=self.vault)
+        self._calendar=CalendarConnector(vault=self.vault)
+        reg.register('weather_current',lambda city='Mersin': self._weather.current(city),'Şehir için güncel hava durumu (OpenWeatherMap vault anahtarı / wttr.in yedek).',{'type':'object','properties':{'city':{'type':'string'}},'required':['city']})
+        reg.register('weather_forecast',lambda city='Mersin': self._weather.forecast(city),'Şehir için yarın tahmini (wttr.in).',{'type':'object','properties':{'city':{'type':'string'}},'required':['city']})
+        reg.register('calendar_events',lambda days=7: self._calendar.events(days),'Yaklaşan takvim etkinlikleri (.ics / Outlook export, gerçek veri).',{'type':'object','properties':{'days':{'type':'number'}},'required':[]})
+        # ---- Skills (PHASE 9) — onay kapısı aynen korunur ----
+        from app.skills import SkillRunner
+        self.skills=SkillRunner(reg,executor=None,audit=self.audit,builtin_dir=str(Path(__file__).resolve().parents[2]/'config'/'skills'),user_dir='data/skills')
+        reg.register('skill_run',lambda name,params=None: self.skills.run(name,params or {},approved=False,allow_dangerous=False),'Güvenli skill çalıştırır (dangerous adım içerirse reddeder, onay ister).',{'type':'object','properties':{'name':{'type':'string'},'params':{'type':'object'}},'required':['name']})
+        reg.register('skill_run_dangerous',lambda name,params=None,approved=False: self.skills.run(name,params or {},approved=approved,allow_dangerous=True),'Dangerous adım içeren skill çalıştırır; onay gerekir.',{'type':'object','properties':{'name':{'type':'string'},'params':{'type':'object'},'approved':{'type':'boolean'}},'required':['name']},dangerous=True)
+        reg.register('skills_list',lambda: self.skills.list(),'Yüklü skilleri listeler (risk seviyeleriyle).',{'type':'object','properties':{},'required':[]})
         reg.register('find_project',find_project,'Ultron projesini bulur.',{'type':'object','properties':{'start':{'type':'string'},'name_hint':{'type':'string'}},'required':[]})
-        reg.register('read_text',read_text,'Metin/kod dosyası okur.',{'type':'object','properties':{'path':{'type':'string'}},'required':['path']})
+        reg.register('read_text',lambda path: sandboxed_read_text(self.sandbox, path),'Metin/kod dosyası okur (sandbox içinde).',{'type':'object','properties':{'path':{'type':'string'}},'required':['path']})
         reg.register('capture_screen',capture_screen,'Gerçek ekran görüntüsü alır.')
         reg.register('screen_ocr',screen_ocr,'Ekran OCR yapar.',{'type':'object','properties':{'path':{'type':'string'}},'required':[]})
         reg.register('analyze_screen',lambda path,prompt='Ekranda ne görüyorsun?':self.vision_llm.analyze(path,prompt),'Vision LLM ile ekranı analiz eder.',{'type':'object','properties':{'path':{'type':'string'},'prompt':{'type':'string'}},'required':['path']})
+        # ---- Vision foundation (PHASE 6) — Pillow/numpy, LLM'siz gerçek analiz ----
+        from app.vision.analyze import analyze_image,diff_images,ocr_elements as _ocr_el
+        reg.register('image_analyze',lambda path: analyze_image(path),'Görüntüyü LLM olmadan analiz eder (parlaklık/kontrast/renk/edge).',{'type':'object','properties':{'path':{'type':'string'}},'required':['path']})
+        reg.register('image_diff',lambda path_a,path_b: diff_images(path_a,path_b),'İki kare arasındaki piksel değişimini ölçer (ekran değişimi/hareket).',{'type':'object','properties':{'path_a':{'type':'string'},'path_b':{'type':'string'}},'required':['path_a','path_b']})
+        reg.register('ocr_elements',lambda path: _ocr_el(path),'OCR ile metin + kutu koordinatları döner (tık hedefleri).',{'type':'object','properties':{'path':{'type':'string'}},'required':['path']})
         reg.register('run_diagnostic',run_diagnostic,'Salt-okunur Windows tanılama çalıştırır.',{'type':'object','properties':{'command':{'type':'string'}},'required':['command']})
         reg.register('ollama_status',lambda:ollama_status(self.brain.base_url,self.brain.model),'Ollama bağlantısını kontrol eder.')
         reg.register('make_plan',lambda goal:self.planner.make_plan(goal),'Karmaşık görev için yapılandırılmış plan üretir.',{'type':'object','properties':{'goal':{'type':'string'}},'required':['goal']})
@@ -172,12 +236,14 @@ class UltronRuntime:
         # INTEGRATION ADAPTATION: apply=True is only honoured when the current
         # request carries explicit approval (runtime.approved, set by the bridge).
         reg.register('self_repair',lambda paths=None,apply=False:self.code_agent.self_repair(paths,apply=apply and self.approved),'Kodu analiz eder, patch önerir ve istenirse onaylı olarak uygular.',{'type':'object','properties':{'paths':{'type':'array','items':{'type':'string'}},'apply':{'type':'boolean'}},'required':[]},dangerous=True)
-        reg.register('write_text',write_text,'Metin dosyası yazar; onay gerekir.',{'type':'object','properties':{'path':{'type':'string'},'content':{'type':'string'}},'required':['path','content']},dangerous=True)
+        reg.register('write_text',lambda path,content: sandboxed_write_text(self.sandbox, path, content),'Metin dosyası yazar (sandbox + onay gerekir).',{'type':'object','properties':{'path':{'type':'string'},'content':{'type':'string'}},'required':['path','content']},dangerous=True)
         reg.register('gui_click',self.gui.click,'Ekranda koordinata tıklar; onay gerekir.',{'type':'object','properties':{'x':{'type':'integer'},'y':{'type':'integer'}},'required':['x','y']},dangerous=True)
         reg.register('gui_type',self.gui.type_text,'Klavye ile metin yazar; onay gerekir.',{'type':'object','properties':{'text':{'type':'string'}},'required':['text']},dangerous=True)
         reg.register('gui_press',self.gui.press,'Klavye tuşuna basar; onay gerekir.',{'type':'object','properties':{'key':{'type':'string'}},'required':['key']},dangerous=True)
         reg.register('gui_hotkey',self.gui.hotkey,'Klavye kısayolu çalıştırır; onay gerekir.',{'type':'object','properties':{'keys':{'type':'array','items':{'type':'string'}}},'required':['keys']},dangerous=True)
         reg.register('gui_locate_and_click',self.gui.locate_and_click,'Ekran görüntüsü şablonunu bulup tıklar; onay gerekir.',{'type':'object','properties':{'image':{'type':'string'},'confidence':{'type':'number'}},'required':['image']},dangerous=True)
+        reg.register('read_screen_elements',lambda: self.gui.read_screen_elements(),'Ekranı OCR ile okuyup tıklanabilir metin öğelerini döner (görme, güvenli).',{'type':'object','properties':{},'required':[]})
+        reg.register('click_text',lambda text: self.gui.click_text(text),'OCR ile bulduğu metne tıklar; onay gerekir.',{'type':'object','properties':{'text':{'type':'string'}},'required':['text']},dangerous=True)
         reg.register('apply_code_patch',lambda patch:self.code_agent.apply_patch(patch),'Önerilen kod patchini uygular; onay gerekir.',{'type':'object','properties':{'patch':{'type':'object'}},'required':['patch']},dangerous=True)
         reg.register('code_intel_analyze',lambda target='all':self.code_intel.analyze(target),'Projeyi statik analiz eder (bug/güvenlik/duplicate/unused/TODO).',{'type':'object','properties':{'target':{'type':'string'}},'required':[]})
         reg.register('code_intel_explain',lambda path:self.code_intel.explain_file(path),'Bir dosyanın ne yaptığını özetler.',{'type':'object','properties':{'path':{'type':'string'}},'required':['path']})
@@ -233,6 +299,22 @@ class UltronRuntime:
         self.proactive.disk_limit=float(pm.get('disk_warning_percent',95))
         return self.settings
     def start_proactive(self):self.proactive.start()
+    def _get_browser(self):
+        # Real browser agent — raises honest RuntimeError when no engine exists.
+        if self._browser_agent is None:
+            from app.browser.agent import BrowserAgent
+            self._browser_agent=BrowserAgent(self.settings,audit=self.audit)
+        return self._browser_agent
+
+    def shutdown(self):
+        # orderly release: browser agent + live voice
+        try:
+            if getattr(self,'_browser_agent',None) is not None:
+                self._browser_agent.close(); self._browser_agent=None
+        except Exception: pass
+        try: self.stop_live_voice()
+        except Exception: pass
+
     def stop_proactive(self):self.proactive.stop()
     def start_live_voice(self):
         # V2 stream+VAD path when deps exist; else legacy fixed window
