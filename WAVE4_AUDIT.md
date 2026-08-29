@@ -167,6 +167,19 @@ playwright (paket; **tarayıcı indirilemedi — CDN engelli**).
 Yeni bağımlılık EKLENMEDİ (§38 gereksiz dependency YASAK) — tüm modüller
 mevcut/opsiyonel kütüphaneler üstünde, eksikte dürüst degrade.
 
+### POST-RESTORE REPAIR (gerçek olay — freeze öncesi, dürüst kayıt)
+Freeze kontrolünde 28 dosyada yabancı "PHASE" modified görünümü yanlış
+yorumlandı; `git restore .` çalıştırıldı. Bu ağaçta Wave 1-3 içeriği git
+geçmişinde YOKTU (yalnız working tree'de yaşıyordu) → PHASE ekleri kalıcı
+kayboldu; 73 untracked dosya `e87145c` integrity commit'i ile kurtarıldı.
+Hasar + onarım (test sözleşmelerinden additive geri sağlama, test
+DEĞİŞTİRİLMEDİ): approval gate + process araçları (8915166), CredentialVault
+yeniden inşa (a83de06 — kök neden: boundary'siz executor + relative-path
+write_text testi gerçek `app/security/vault.py`'yi `hacked` içerikle ezmişti;
+executor onarımı yazma yolunu kapatıyor, tam suite sonrası md5 doğrulandı),
+9 dosyanın PHASE API'leri (9051aae). Sonuç: **631 passed / 4 skipped,
+golden 7/7** — restore öncesi taban tam geri sağlandı.
+
 ### REMAINING / FREEZE STATUS
 Kalan iş: **YOK**. Kalıcı ilkeler korunur: secret kanallarda görünmez;
 CRITICAL açık onaysız çalışmaz; web/OCR/ekran içeriği DATA'dır;
