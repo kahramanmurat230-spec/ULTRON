@@ -209,6 +209,16 @@ class LiveVoiceV2:
         self.sr = int(settings.get("voice", {}).get("sample_rate", 16000))
         self.wake = settings.get("wake_word", "ultron").lower()
         self._whisper_model = None
+        # PHASE 5: GERÇEK wake-word (audio-level spotting) — engine yoksa
+        # eski transcript-substring yedek davranışı dürüst şekilde sürer,
+        # ama bu artık "wake-word" olarak RAPORLANMAZ (bkz. wake.status).
+        self.wake_manager = None
+        try:
+            from app.voice.wake import WakeWordManager
+            self.wake_manager = WakeWordManager(settings)
+            self.wake_manager.start()
+        except Exception:
+            self.wake_manager = None
 
     def _transcribe(self, pcm: bytes) -> str:
         import io
@@ -236,11 +246,19 @@ class LiveVoiceV2:
 
         def process_utterance(pcm: bytes):
             try:
+                # 1) gerçek audio-level wake engine (varsa)
+                if self.wake_manager is not None and self.wake_manager.active is not None:
+                    hit = self.wake_manager.process_chunk(pcm)
+                    if hit is None:
+                        return  # wake duyulmadı: STT'e bile gerek yok
                 text = self._transcribe(pcm)
                 self.stack.mark("stt")
-                if not text or self.wake not in text.lower():
-                    return
-                cmd = text.lower().split(self.wake, 1)[1].strip(" ,.:;-") or text
+                if self.wake_manager is not None and self.wake_manager.active is not None:
+                    cmd = text.strip(" ,.:;-")  # wake zaten audio'da doğrulandı
+                else:
+                    if not text or self.wake not in text.lower():
+                        return
+                    cmd = text.lower().split(self.wake, 1)[1].strip(" ,.:;-") or text
                 self.stack.mark("llm")
                 answer = self.agent.handle(cmd)
                 self.stack.mark("llm")

@@ -8,6 +8,10 @@ import time
 
 _LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1", "0.0.0.0")
 
+# Engines that synthesize ON THIS MACHINE. edge-tts streams from Microsoft's
+# cloud service, so it is real neural TTS but NOT local — the audit must say so.
+LOCAL_TTS_BACKENDS = ("kokoro", "pykokoro")
+
 state = {"sovereign_mode": False, "denied": []}
 
 
@@ -48,13 +52,15 @@ def assert_vision_residency(dest: str) -> None:
 def audit(llm_host: str, tts_backend: str | None, stt_local: bool,
           ollama_connected: bool) -> dict:
     llm_local = is_local(llm_host or "")
+    tts_local = bool(tts_backend) and tts_backend in LOCAL_TTS_BACKENDS
     return {
         "sovereign_mode": state["sovereign_mode"],
         "llm": {"endpoint": llm_host, "local": llm_local,
                 "status": "PASS" if (llm_local and ollama_connected) else
                           ("LOCAL-BUT-OFFLINE" if llm_local else "FAIL")},
-        "tts": {"backend": tts_backend, "local": tts_backend is not None,
-                "status": "PASS" if tts_backend else "NONE"},
+        "tts": {"backend": tts_backend, "local": tts_local,
+                "status": "PASS" if tts_local else
+                          ("CLOUD" if tts_backend else "NONE")},
         "stt": {"local": bool(stt_local),
                 "status": "PASS" if stt_local else "BROWSER-CLOUD-OR-ABSENT"},
         "denied_calls": state["denied"][-10:],
