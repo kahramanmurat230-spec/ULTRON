@@ -36,6 +36,7 @@ class CognitiveTrace:
             kind TEXT, subject TEXT, data TEXT, redacted INTEGER DEFAULT 1)""")
         self.db.execute("CREATE INDEX IF NOT EXISTS ix_kind ON trace(kind)")
         self.db.commit()
+        self._pending = 0
         if redact_fn is None:
             from app.security.redaction import redact as _r
 
@@ -54,7 +55,10 @@ class CognitiveTrace:
                 "INSERT INTO trace(ts,kind,subject,data) VALUES(?,?,?,?)",
                 (_now(), kind, self.redact_fn(str(subject))[:160],
                  red[:4000]))
-            self.db.commit()
+            self._pending += 1
+            if self._pending >= 25:   # batch commit: kayıt başına disk sync YOK
+                self.db.commit()
+                self._pending = 0
             return {"ok": True, "kind": kind, "redacted": red != raw}
 
     # ---------------------------------------------------- okuma
@@ -71,6 +75,9 @@ class CognitiveTrace:
         q += " ORDER BY id DESC LIMIT ?"
         args.append(int(limit))
         with self.lock:
+            if self._pending:      # askıda kayıt varsa önce floş (tutarlı okuma)
+                self.db.commit()
+                self._pending = 0
             rows = self.db.execute(q, args).fetchall()
         return [{"ts": r[0], "kind": r[1], "subject": r[2],
                  "data": json.loads(r[3])} for r in rows]
