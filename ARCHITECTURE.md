@@ -107,3 +107,62 @@ behind the existing V15.1 aiohttp/WebSocket layer. PySide6 desktop UI, `main.py`
   llava/vision model, else None → real ERROR/UNAVAILABLE (never fabricated).
 - Explicit path support: "Bu ekran görüntüsünü analiz et: <png>" skips capture.
 - No vision model → labeled real-OCR fallback if pytesseract exists, else ERROR.
+
+---
+
+# JARVIS FOUNDATION (2026-08-29)
+
+V15 tabanının üzerine eklenen foundation katmanları (tümü testli, mock'suz):
+
+## Çekirdek döngü
+- **Brain + Model Router** (`app/core/`): Ollama adapter (sovereign-local, cloud bloklu);
+  capability registry (CODING/VISION/FAST/GENERAL), conservative routing, fallback +
+  backoff, ask_json structured output, fit_messages context bütçesi, health.
+- **Supervisor + Task Engine** (`app/agent/supervisor.py`, `app/tasks/engine.py`):
+  THINK→PLAN→ACT→OBSERVE→VERIFY→REPLAN→RECOVER→COMPLETE; 8 statuslü kalıcı görevler
+  (SQLite), budget'ler (iteration/timeout/tool/retry/step), WAITING_APPROVAL→approve→resume,
+  boot recovery. Sonsuz loop yok.
+- **World Model** (`app/world/model.py`): presence/screen/task/system/apps/files/iot/events
+  tek güncel context (1200 char cap) — memory geçmiş, world şimdi.
+
+## Güvenlik çekirdeği
+- **Credential Vault** (`app/security/vault.py`): Fernet at-rest, env/keyfile anahtar,
+  HTTP üzerinden değer okunamaz, redaction pattern+somut değer.
+- **Filesystem Sandbox** (`app/security/sandbox.py`): kök bazlı okuma/yazma, traversal/
+  UNC/symlink/system-dizin bloğu; file tools + codegen sandbox'lı.
+- **Risk Engine** (`app/security/risk.py`): SAFE/LOW/MEDIUM/HIGH/CRITICAL; CRITICAL
+  (shell/delete/install/ayar/process-kill) sunucu-doğrulanmış onay ister; güvenlik çekirdeği
+  self-coding'e mimari olarak kapalı (onaylı olsa bile).
+- **Audit + redaction + rate limit + session TTL + server-side approval** (client
+  `approved=true`'ya güvenilmez).
+
+## Yetenek katmanları
+- **Voice**: gerçek wake engine'leri (Porcupine AccessKey'li / openWakeWord modelli;
+  transcript araması wake DEĞİLDİR) → VAD (energy/webrtc/silero) → faster-whisper STT →
+  edge-tts + barge-in. Engine yoksa dürüst unavailable + manuel tetik.
+- **Vision**: LLM'siz foundation (parlaklık/edge/renk/diff) + OCR elements (kutu+güven) +
+  LLaVA köprüsü + stale-screenshot koruması + aksiyon sonrası görsel doğrulama.
+- **Computer Use**: pyautogui/pygetwindow + OCR-anchored click_text + süreç envanteri
+  (process_kill CRITICAL, self-kill yasak) + startup görünümü.
+- **Browser Agent**: Playwright; SAFE okuma / onaylı eylem; OBSERVE→VERIFY; gerçek
+  Chromium E2E geçti (ULTRON_BROWSER_EXECUTABLE ile harici motor da destekli).
+- **Skills**: JSON manifest (id/version/permissions/risk/input-output schema/timeout/
+  verification); risk kayıt bayraklarından hesaplanır; dangerous adım onay kapısından.
+- **Connectors**: hava (OWM+wttr), takvim (.ics+Outlook COM), e-posta (SMTP/IMAP gerçeği,
+  kimlik vault'tan, send=HIGH onaylı).
+- **Proactive/Presence/IoT**: sustained-sample alarm (spike yok sayılır) + cooldown +
+  hysteresis; çok kaynaklı presence (wifi TCP reachability gerçek, kamera asla simüle
+  edilmez); IoT cihazları is_simulated etiketli, driver başarısızlığı sahte başarı yok.
+- **Mesh**: PC↔mobil (token veya X-Mesh-Key pairing), master_rules SHA-sealed (asla merge
+  edilmez), heartbeat TTL, capability declaration.
+
+## Self-coding
+`codegen.py`: DETECT→ANALYZE→PROPOSE→DIFF→APPROVAL→**BACKUP**→APPLY→TEST→REGRESSION→
+VERIFY→COMMIT(ops.)|ROLLBACK. Güvenlik çekirdeği dosyaları ön-doğrulamayla reddedilir.
+
+## Test & Değerlendirme
+23 test dosyası (174+ test) + `tests/test_eval_golden.py` (36 golden, 100%).
+Kategoriler: approval, redaction, sandbox+vault, risk, task engine, supervisor, world,
+model router, browser (gerçek E2E), skills, connectors (gerçek HTTP/SMTP/IMAP), email,
+vision, computer-use, process, proactive+IoT, mesh, wake, VAD/barge-in, presence,
+codegen pipeline, auth+rate limit, eval goldens.
