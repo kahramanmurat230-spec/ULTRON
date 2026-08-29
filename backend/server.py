@@ -1029,7 +1029,8 @@ async def api_connectors_health(_req: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": "runtime yok"}, status=503)
     return web.json_response({"ok": True,
                               "weather": rt._weather.health(),
-                              "calendar": rt._calendar.health()})
+                              "calendar": rt._calendar.health(),
+                              "email": rt._email.health()})
 
 
 # ---------------- Long-running tasks / supervisor / model health ----------------

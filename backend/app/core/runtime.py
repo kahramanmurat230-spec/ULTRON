@@ -209,9 +209,15 @@ class UltronRuntime:
         from app.connectors import WeatherConnector,CalendarConnector
         self._weather=WeatherConnector(vault=self.vault)
         self._calendar=CalendarConnector(vault=self.vault)
+        from app.connectors.email import EmailConnector
+        self._email=EmailConnector(vault=self.vault,settings=self.settings)
         reg.register('weather_current',lambda city='Mersin': self._weather.current(city),'Şehir için güncel hava durumu (OpenWeatherMap vault anahtarı / wttr.in yedek).',{'type':'object','properties':{'city':{'type':'string'}},'required':['city']})
         reg.register('weather_forecast',lambda city='Mersin': self._weather.forecast(city),'Şehir için yarın tahmini (wttr.in).',{'type':'object','properties':{'city':{'type':'string'}},'required':['city']})
         reg.register('calendar_events',lambda days=7: self._calendar.events(days),'Yaklaşan takvim etkinlikleri (.ics / Outlook export, gerçek veri).',{'type':'object','properties':{'days':{'type':'number'}},'required':[]})
+        reg.register('email_inbox',lambda limit=10: self._email.inbox_read(limit),'Gelen kutusunu okur (IMAP, vault kimliği ile).',{'type':'object','properties':{'limit':{'type':'number'}},'required':[]})
+        reg.register('email_search',lambda query,limit=10: self._email.search(query,limit=limit),'E-posta konu araması yapar (IMAP SEARCH).',{'type':'object','properties':{'query':{'type':'string'},'limit':{'type':'number'}},'required':['query']})
+        reg.register('email_draft',lambda to,subject,body: self._email.draft(to,subject,body),'E-posta taslağı oluşturur (göndermez, güvenli).',{'type':'object','properties':{'to':{'type':'string'},'subject':{'type':'string'},'body':{'type':'string'}},'required':['to','subject','body']})
+        reg.register('email_send',lambda to,subject,body,attachments=None: self._email.send(to,subject,body,attachments),'E-posta gönderir (SMTP); onay gerekir.',{'type':'object','properties':{'to':{'type':'string'},'subject':{'type':'string'},'body':{'type':'string'},'attachments':{'type':'array','items':{'type':'string'}}},'required':['to','subject','body']},dangerous=True)
         # ---- Skills (PHASE 9) — onay kapısı aynen korunur ----
         from app.skills import SkillRunner
         self.skills=SkillRunner(reg,executor=None,audit=self.audit,builtin_dir=str(Path(__file__).resolve().parents[2]/'config'/'skills'),user_dir='data/skills')
