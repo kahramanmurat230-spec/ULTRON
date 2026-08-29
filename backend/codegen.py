@@ -13,10 +13,11 @@ from pathlib import Path
 
 
 class CodeGen:
-    def __init__(self, root: Path, audit, notify):
+    def __init__(self, root: Path, audit, notify, sandbox=None):
         self.root = root.resolve()
         self.audit = audit
         self.notify = notify
+        self.sandbox = sandbox  # optional FilesystemSandbox (server injects)
         self.proposals: dict[str, dict] = {}
 
     # ------------------------------------------------------------ generation
@@ -94,21 +95,38 @@ class CodeGen:
         return {"ok": True, "proposal": proposal}
 
     # ----------------------------------------------------------------- apply
-    async def apply(self, pid: str, run_tests) -> dict:
+    async def apply(self, pid: str, run_tests, commit: bool = False) -> dict:
+        """APPROVAL -> BACKUP -> APPLY -> TEST(REGRESSION) -> VERIFY ->
+        COMMIT (optional) or ROLLBACK. Security-core paths are always refused."""
         prop = self.proposals.get(pid)
         if not prop:
             return {"ok": False, "error": "unknown proposal"}
         if prop["status"] != "WAITING_APPROVAL":
             return {"ok": False, "error": f"proposal already {prop['status']}"}
         self.audit.write("CODEGEN_APPROVAL", f"{pid} APPROVE&APPLY")
+        # PHASE 15: BACKUP — restore point BEFORE any write
+        backup_dir = self.root / "data/backups/codegen" / f"{pid}_{int(time.time())}"
         originals = {}
+        # PHASE 15: ön doğrulama — korumalı yol varsa hiç yazmadan RED (raise)
+        from app.security.risk import SelfCodeBoundary
+        for f in prop["files"]:
+            rel = str(f.get("path", ""))
+            p = (self.root / rel).resolve()
+            if self.root not in p.parents:
+                raise PermissionError(f"Patch path outside project: {rel}")
+            if self.sandbox is not None:
+                self.sandbox.validate_write(p)  # PHASE 10: sandbox-enforced
+            SelfCodeBoundary.check(p)  # security core is untouchable
         try:
             for f in prop["files"]:
                 rel = str(f.get("path", ""))
                 p = (self.root / rel).resolve()
-                if self.root not in p.parents:
-                    raise PermissionError(f"Patch path outside project: {rel}")
                 originals[rel] = p.read_text(encoding="utf-8", errors="replace") if p.exists() else None
+                # backup kopyası (gerçek dosya içeriği)
+                bdir = backup_dir / rel
+                bdir.parent.mkdir(parents=True, exist_ok=True)
+                if originals[rel] is not None:
+                    bdir.write_text(originals[rel], encoding="utf-8")
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text(f["content"], encoding="utf-8")
             results = await run_tests(quick=True)
@@ -117,8 +135,28 @@ class CodeGen:
                 raise RuntimeError("tests failed: " + ", ".join(r["name"] for r in failed))
             prop["status"] = "APPLIED"
             self.audit.write("CODEGEN_APPLIED", f"{pid} tests=PASS")
+            commit_info = None
+            if commit:
+                # PHASE 15: COMMIT adımı — sadece patch dosyaları stage edilir
+                import subprocess
+                import sys as _sys
+                files = [str((self.root / f["path"]).resolve()) for f in prop["files"]]
+                try:
+                    subprocess.run(["git", "add", *files], cwd=self.root, check=True,
+                                   timeout=30)
+                    cp = subprocess.run(
+                        ["git", "commit", "-q", "-m",
+                         f"codegen({pid}): {prop['goal'][:80]}"],
+                        cwd=self.root, check=True, capture_output=True, text=True,
+                        timeout=60)
+                    commit_info = {"committed": True,
+                                   "note": cp.stdout.strip()[:120] or "ok"}
+                    self.audit.write("CODEGEN_COMMIT", f"{pid}")
+                except Exception as exc:  # noqa: BLE001
+                    raise RuntimeError(f"git commit failed: {str(exc)[:120]}") from exc
             self.notify("codegen", f"Patch {pid} applied — all tests passed.", "success", force=True)
-            return {"ok": True, "tests": results}
+            return {"ok": True, "tests": results,
+                    "backup_dir": str(backup_dir), "commit": commit_info}
         except Exception as e:  # noqa: BLE001
             for rel, orig in originals.items():
                 p = self.root / rel
@@ -128,6 +166,8 @@ class CodeGen:
                     p.write_text(orig, encoding="utf-8")
             prop["status"] = "ROLLED_BACK"
             self.audit.write("CODEGEN_ROLLBACK", f"{pid} {e}")
+            if backup_dir.exists():
+                self.audit.write("CODEGEN_BACKUP_KEPT", str(backup_dir))  # restore point
             self.notify("codegen", f"Patch {pid} failed tests → rolled back.", "error", force=True)
             return {"ok": False, "error": str(e), "rolled_back": True}
 

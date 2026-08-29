@@ -1,5 +1,33 @@
 import time
 class GUIAutomation:
+    @staticmethod
+    def find_text_in_elements(elements, query):
+        """OCR/DOM elementleri içinde metin ara (PHASE: vision-anchored).
+
+        Sıralama kuralı: 1) exact match (case-insens) her zaman substring'ten
+        üstün; 2) eşitlikte en yüksek OCR conf; 3) substring en son.
+        Bulunamazsa None (dürüst başarısızlık)."""
+        q = (query or "").strip().lower()
+        if not q:
+            return None
+        best = None
+        best_key = None
+        for el in elements or []:
+            t = str(el.get("text", "")).strip()
+            tl = t.lower()
+            if not tl:
+                continue
+            if tl == q:
+                key = (2, float(el.get("conf", 0.0)))
+            elif q in tl:
+                key = (1, float(el.get("conf", 0.0)))
+            else:
+                continue
+            if best_key is None or key > best_key:
+                best, best_key = el, key
+        return best
+
+
     def _pyautogui(self):
         try: import pyautogui; return pyautogui
         except ImportError as e: raise RuntimeError('GUI otomasyonu için pyautogui kurulmalı.') from e
@@ -33,3 +61,54 @@ class GUIAutomation:
         except Exception as e:
             return {'focused':False,'error':str(e)}
         return {'focused':True,'title':w.title}
+
+    # ---- PHASE 7: vision-anchored computer use (OCR -> click) ----
+    @staticmethod
+    def find_text_in_elements(elements, text):
+        """Pure matcher: best OCR element for a text label (testable headless)."""
+        t = str(text).strip().lower()
+        best = None
+        for el in elements or []:
+            label = str(el.get("text", "")).strip().lower()
+            if not label or t != label and t not in label:
+                continue
+            score = (2 if label == t else 1) * 100 + float(el.get("conf", 0))
+            if best is None or score > best[0]:
+                best = (score, el)
+        return best[1] if best else None
+
+    def read_screen_elements(self):
+        """Ekranı okur ve OCR ile tıklanabilir metin öğelerini döner (SAFE)."""
+        from app.vision.screen import capture_screen
+        from app.vision.analyze import ocr_elements
+        shot = capture_screen()
+        els = ocr_elements(shot)
+        return {"path": shot, "count": len(els), "elements": els[:60]}
+
+    def click_text(self, text, settle_s=0.15, verify: bool = True):
+        """OCR ile bulduğu metne tıklar (dangerous): görüntü -> hedef -> eylem -> VERIFY."""
+        from app.vision.analyze import screenshot_fresh, verify_visual_change
+        info = self.read_screen_elements()
+        fresh = screenshot_fresh(info["path"], max_age_s=20.0)
+        if not fresh["fresh"]:
+            return {"found": False, "text": text, "screen": info["path"],
+                    "stale_screenshot": fresh}  # eski kareye tıklanmaz
+        el = self.find_text_in_elements(info["elements"], text)
+        if el is None:
+            return {"found": False, "text": text, "screen": info["path"]}
+        b = el["box"]
+        x = b["x"] + b["w"] // 2
+        y = b["y"] + b["h"] // 2
+        self.click(x, y)
+        time.sleep(settle_s)
+        out = {"found": True, "clicked": [x, y], "matched": el["text"],
+               "conf": el["conf"]}
+        if verify:
+            try:
+                from app.vision.screen import capture_screen
+                after = capture_screen()
+                out["verification"] = verify_visual_change(info["path"], after)
+            except Exception as exc:  # noqa: BLE001
+                out["verification"] = {"action_effective": None,
+                                       "error": str(exc)[:120]}  # dürüst: doğrulanamadı
+        return out

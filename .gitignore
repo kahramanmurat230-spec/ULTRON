@@ -4,3 +4,5 @@ node_modules/
 *.pyc
 backend/data/
 backend/backups/
+dist/
+backend/config/security/master_voiceprint.*

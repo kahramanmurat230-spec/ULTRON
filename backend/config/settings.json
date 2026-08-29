@@ -5,7 +5,15 @@
     "provider": "ollama",
     "model": "qwen2.5-coder:7b",
     "base_url": "http://127.0.0.1:11434",
-    "timeout_seconds": 180
+    "timeout_seconds": 180,
+    "retry_backoff_s": 0.5,
+    "routing": {
+      "coding": "qwen2.5-coder:7b",
+      "vision": "llava:7b",
+      "fast": "qwen3:4b",
+      "general": "qwen3:8b",
+      "note": "sadece kurulu modeller kullanilir; router gereksiz model degistirmez"
+    }
   },
   "voice": {
     "stt_model": "small",
@@ -36,7 +44,17 @@
       "gui_locate_and_click",
       "apply_code_patch",
       "close_application"
-    ]
+    ],
+    "filesystem": {
+      "allowed_read_roots": [
+        "..",
+        "~"
+      ],
+      "allowed_write_roots": [
+        ".."
+      ],
+      "note": "relative paths resolve against backend/; ~ = home. UNC + system dirs always rejected."
+    }
   },
   "proactive": {
     "enabled": true,
@@ -81,5 +99,16 @@
   "gui_automation": {
     "enabled": true,
     "require_confirmation": true
+  },
+  "browser": {
+    "headless": true,
+    "channel": "auto",
+    "timeout_seconds": 20,
+    "note": "auto: bundled chromium -> system chrome -> system edge. Kurulum: python -m playwright install chromium"
+  },
+  "wake": {
+    "keyword": "jarvis",
+    "threshold": 0.5,
+    "note": "Gerçek audio-level wake-word. Porcupine: PICOVOICE_ACCESS_KEY env veya vault 'picovoice_access_key'; OpenWakeWord: data/voice/wake/*.tflite. Engine yoksa manuel tetikleme."
   }
 }

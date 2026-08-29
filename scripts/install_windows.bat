@@ -42,3 +42,8 @@ python -B -c "from app.core.doctor import run_doctor; r=run_doctor({'db_paths':[
 echo.
 echo Kurulum tamam. Baslatmak icin: scripts\start_ultron.bat
 pause
+
+
+echo [5/5] Kurulum dogrulamasi...
+python scripts\check_deps.py
+if errorlevel 1 ( echo [WARN] Zorunlu bazi ogeler eksik — yukaridaki rapora bakin. & pause )
