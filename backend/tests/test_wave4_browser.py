@@ -53,6 +53,7 @@ class ScriptEngine:
 
     def click(self, selector):
         self.calls.append(("click", selector))
+        self.mutated = True          # eylem sayfayı değiştirdi (gerçekçi)
         return {"clicked": selector}
 
     def type_text(self, selector, text):

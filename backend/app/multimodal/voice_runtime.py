@@ -304,6 +304,13 @@ class VoiceRuntime:
             self.latency.finish({"final_stt_ms": "final_stt",
                                  "first_partial_ms": "first_partial"})
             return result
+        if self.brain_stream is None:
+            # model yok: sahte yanıt ÜRETİLMEZ — açık degraded raporu
+            self.fsm.transition(IDLE, reason="brain unavailable")
+            result["status"] = "degraded_no_brain"
+            result["error"] = "brain model bağlı değil — yanıt üretilemez"
+            self.latency.finish({"final_stt_ms": "final_stt"})
+            return result
 
         # --- 3) brain stream → TTS EŞZAMANLI (sequential DEĞİL)
         self.fsm.transition(THINKING, reason="brain start")
@@ -356,6 +363,14 @@ class VoiceRuntime:
             t.cancel()
         if pending:
             result["status"] = "timeout"
+        # arka plan hatası YUTULMAZ — dürüst rapor (F-eksiği düzeltmesi)
+        for t in done:
+            exc = t.exception()
+            if exc is not None:
+                result["status"] = "error"
+                result["error"] = f"{t.get_name() or 'task'}: " \
+                                  f"{type(exc).__name__}: {str(exc)[:120]}"
+                self._emit("voice.error", error=result["error"])
 
         if cancel.is_set():
             result["interrupted"] = True

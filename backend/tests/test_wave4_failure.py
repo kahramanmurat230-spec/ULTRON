@@ -358,11 +358,10 @@ def test_f17_model_unavailable_degrades():
 
     rt = VoiceRuntime(mic_frames=mic, stt_stream=stt, brain_stream=None,
                       tts_speak_chunks=None)
-    # brain yok → capability degraded; run_turn STT sonrası brain akışı
-    # olmadığı için chunks boş, sahte yanıt ÜRETİLMEZ
+    # brain yok → capability degraded; sahte yanıt ÜRETİLMEZ
     out = asyncio.run(rt.run_turn())
-    assert out.get("chunks") in (None, []) and out["status"] in ("ok",
-                                                                 "no_speech")
+    assert out["status"] == "degraded_no_brain"
+    assert "üretilemez" in out["error"] and out.get("chunks") in (None, [])
 
 
 # F18 — permission denied (browser onaysız) → BrowserDenied
