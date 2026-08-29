@@ -157,15 +157,11 @@ class StreamingTTS:
                     self._buf += " "          # chunk sınırı cümle böler
                 self._buf += nxt
             # tamamlanmış cümleleri sentezle (akış bitmemiş olsa bile)
-            sentences = split_sentences(self._buf) if done else \
-                split_sentences(self._buf)[:-1]  # son parça yarım olabilir
-            leftover = self._buf if not done else ""
-            if done:
-                leftover = ""
-                # tüm cümleler (son yarım dahil) konuşulur
-                sentences = split_sentences(self._buf)
-                if self._buf and not sentences:
-                    sentences = [self._buf.strip()]
+            sentences = split_sentences(self._buf)
+            if not done and sentences:
+                sentences = sentences[:-1]   # son parça yarım olabilir
+            if done and self._buf.strip() and not sentences:
+                sentences = [self._buf.strip()]
             for sent in sentences:
                 if self.cancelled.is_set():
                     return
@@ -179,13 +175,16 @@ class StreamingTTS:
                     audio, fmt = await self._synthesize_with_retry(sent)
                     self._cache_put(sent, audio)
                     self.metrics["synthesized"] += 1
+                # işlenen cümle buffer'dan DÜŞÜRÜLÜR (tekrar konuşma YOK)
+                idx = self._buf.find(sent)
+                if idx >= 0:
+                    self._buf = self._buf[idx + len(sent):].lstrip()
                 if self.metrics["first_audio_ms"] is None:
                     self.metrics["first_audio_ms"] = round(
                         (self._now() - t0) * 1000, 1)
                     got_any = True
                 yield {"audio": audio, "fmt": fmt, "text": sent,
                        "cached": cached is not None}
-            self._buf = leftover
         if got_any or self.metrics["synthesized"]:
             self.metrics["complete_ms"] = round((self._now() - t0) * 1000, 1)
 

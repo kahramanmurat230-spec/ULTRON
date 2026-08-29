@@ -250,9 +250,14 @@ class VoiceRuntime:
 
         async def consume_mic():
             speech = False
+            n = 0
             async for frame in self.mic_frames():
                 if cancel.is_set():
                     return
+                n += 1
+                if n % 16 == 0:
+                    await asyncio.sleep(0)   # event loop'a kontrol —
+                    # sonsuz/hızlı kaynak timer'ları bloklamasın (F5 dersi)
                 loud = self.vad.process_frame(frame) if self.vad else True
                 if loud and not speech:
                     speech = True
@@ -269,6 +274,13 @@ class VoiceRuntime:
             mic_task.cancel()
             self.fsm.transition(IDLE, reason="listen timeout")
             result["status"] = "listen_timeout"
+            return result
+        except (IOError, OSError) as exc:
+            # mic disconnect: cihaz hatası — ERROR durumuna düş, dürüst rapor
+            self.fsm.transition(ERROR, reason="mic failure")
+            self.fsm.transition(IDLE, reason="mic recovery")
+            result["status"] = "mic_error"
+            result["error"] = str(exc)[:120]
             return result
 
         # --- 2) STT stream (partial'lar eşzamanlı akar)
