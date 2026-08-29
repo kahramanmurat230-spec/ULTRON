@@ -244,6 +244,8 @@ class GoalEngine:
                 return {"ok": False, "error": "unknown goal"}
             if g["status"] == "DONE":
                 return {"ok": False, "error": "already completed"}
+            if g["status"] == "CANCELLED":
+                return {"ok": False, "error": "already cancelled"}  # çift iptal yok
             self.db.execute("UPDATE goals SET status='CANCELLED' WHERE id=?",
                             (goal,))
             self._log(goal, "CANCELLED", reason)
