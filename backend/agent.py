@@ -6,10 +6,24 @@ import time
 STATES = ["IDLE", "LISTENING", "THINKING", "PLANNING", "EXECUTING", "VERIFYING", "WAITING_APPROVAL", "DONE", "ERROR"]
 
 
+# Salt-okunur shell allowlist (approval gate): ilk kelimeye göre aile.
+# Listedeki komutlar onay istemez; listede OLMAYAN her shell komudu
+# request_approval akışına düşer (callback yoksa RED).
+SAFE_SHELL_COMMANDS = (
+    "echo", "dir", "ver", "whoami", "hostname", "date", "time",
+    "tasklist", "ipconfig", "python --version", "node --version",
+    "npm --version", "git --version", "git status", "git log",
+    "pip --version", "pip list",
+)
+
+
 class Agent:
-    def __init__(self, broadcast, tools, memory, telemetry, get_ai_status, on_activity, fallback=None) -> None:
+    def __init__(self, broadcast, tools, memory, telemetry, get_ai_status, on_activity, fallback=None, request_approval=None) -> None:
         self.broadcast = broadcast
         self.tools = tools
+        # approval gate köprüsü: fn(text, risks) -> task-id (senkron);
+        # yoksa riskli shell RED edilir (sessizce çalıştırılmaz)
+        self.request_approval = request_approval
         self.memory = memory
         self.telemetry = telemetry
         self.get_ai_status = get_ai_status
@@ -120,10 +134,31 @@ class Agent:
                 await self.set_state("VERIFYING", "Checking browser process…")
                 await asyncio.sleep(0.25)
             elif kind == "terminal":
-                await self.set_state("EXECUTING", f"$ {intent['arg'][:60]}")
-                result = await self.tools.execute("terminal", intent["arg"])
-                await self.set_state("VERIFYING", "Checking exit code…")
-                await asyncio.sleep(0.2)
+                cmd = intent["arg"]
+                allowlisted = any(cmd == c or cmd.startswith(c + " ")
+                                  for c in SAFE_SHELL_COMMANDS)
+                if not allowlisted and not approved:
+                    # riskli shell: onay ŞART (bypass YASAK)
+                    if self.request_approval is not None:
+                        risks = ["non-allowlisted shell command"]
+                        tid = self.request_approval(text, risks)
+                        await self.set_state("WAITING_APPROVAL",
+                                             f"approval pending ({tid})")
+                        result = {"ok": True,
+                                  "result": "waiting-approval",
+                                  "approval_task": tid}
+                    else:
+                        await self.set_state("ERROR",
+                                             "shell command requires "
+                                             "approval (no callback)")
+                        result = {"ok": False, "error":
+                                  "approval required for non-allowlisted "
+                                  "shell command"}
+                else:
+                    await self.set_state("EXECUTING", f"$ {cmd[:60]}")
+                    result = await self.tools.execute("terminal", cmd)
+                    await self.set_state("VERIFYING", "Checking exit code…")
+                    await asyncio.sleep(0.2)
             elif kind == "system_check":
                 await self.set_state("EXECUTING", "Sampling CPU / RAM / DISK / NET…")
                 snap = self.telemetry.snapshot()
