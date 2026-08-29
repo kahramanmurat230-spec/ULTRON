@@ -423,7 +423,8 @@ async def api_mesh_handshake(req: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": "bad json"}, status=400)
     res = hub.mesh_registry.handshake(
         str(body.get("node_id", "unknown")), str(body.get("role", "")),
-        str(body.get("version", "0")), _mesh_auth_ok(req))
+        str(body.get("version", "0")), _mesh_auth_ok(req),
+        caps=body.get("caps") or [])  # PHASE 14: capability declaration
     return web.json_response(res)
 
 
