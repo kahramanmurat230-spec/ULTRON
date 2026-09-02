@@ -8,6 +8,7 @@ import { CommandCenter } from "./components/CommandCenter";
 import { Drawer } from "./components/Drawer";
 import { Modals } from "./components/Modals";
 import { HolographicWorkspace } from "./holographic/HolographicWorkspace";
+import { CameraTrackingLayer } from "./holographic/interaction/CameraTrackingLayer";
 
 /** ULTRON — Holographic Computing workspace. The holographic layer is presentation-only and consumes the existing store/WS pipeline. */
 export default function App() {
@@ -63,7 +64,7 @@ export default function App() {
     <div className="void">
       <i className="reticle r-tl" /><i className="reticle r-tr" /><i className="reticle r-bl" /><i className="reticle r-br" />
       <div className="void-top"><span className="boss-mini">BOSS</span><span className="sov-mini">🔒 {sov}</span></div>
-      {!minimized && <><HolographicWorkspace /><CommandCenter onVoice={voice.toggle} /></>}
+      {!minimized && <><HolographicWorkspace /><CameraTrackingLayer /><CommandCenter onVoice={voice.toggle} /></>}
       <div className="void-corner">
         <button className="ghost" title="console" onClick={() => setState({ drawer: "hud" })}><Layers size={13} /></button>
         <button className="ghost" title="settings" onClick={() => setState({ settingsOpen: true })}><Settings size={13} /></button>
