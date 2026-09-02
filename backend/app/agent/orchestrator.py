@@ -6,6 +6,7 @@ alternative) → DONE/ERROR.  Simple questions never enter the planner.
 No infinite retries. No fake success.
 """
 import re
+from pathlib import Path
 
 APP_MAP = {
     "chrome": "chrome", "google chrome": "chrome",
@@ -15,7 +16,8 @@ APP_MAP = {
 }
 DANGEROUS_TOOLS = {"gui_click", "gui_double_click", "gui_right_click", "gui_type",
                    "gui_press", "gui_hotkey", "gui_scroll", "write_text",
-                   "apply_code_patch", "self_repair", "close_application"}
+                   "apply_code_patch", "self_repair", "close_application",
+                   "copy_path", "move_path", "rename_path", "create_folder", "delete_path"}
 
 
 def _clause_split(text: str) -> list[str]:
@@ -25,8 +27,43 @@ def _clause_split(text: str) -> list[str]:
     return parts
 
 
+def _known_path(value: str) -> str:
+    from app.tools.file_tools import known_folder
+    p = known_folder(value.strip(" \"'"))
+    return str(p) if p else str(Path(value.strip(" \"'" )).expanduser())
+
+
 def parse_step(clause: str) -> dict | None:
     c = clause.lower()
+    # File operations are checked before generic application/browser rules.
+    m = re.search(r"(.+?)\s+(?:dosyasını|dosyayi|dosyayı|dosya(?:yı|yi|yi)?)\s+(?:oku|okuyabilir misin)", c)
+    if m:
+        return {"label": f"dosya oku: {m.group(1).strip()}", "tool": "read_text",
+                "args": {"path": _known_path(m.group(1).strip())}, "verify": "text"}
+    m = re.search(r"(?:klasör|klasor|dizin)\s+(.+?)\s+(?:oluştur|olustur|aç|ac)$", c)
+    if m:
+        return {"label": f"klasör oluştur: {m.group(1).strip()}", "tool": "create_folder",
+                "args": {"path": _known_path(m.group(1).strip())}, "verify": "exists"}
+    m = re.search(r"(.+?)\s+(?:dosyasını|dosyayi|dosyayı|dosyayı)\s+(.+?)\s+(?:klasörüne|klasorune|dizinine)\s+kopyala$", c)
+    if m:
+        return {"label": "dosya kopyala", "tool": "copy_path",
+                "args": {"source": _known_path(m.group(1)), "destination": _known_path(m.group(2))}, "verify": "exists"}
+    m = re.search(r"(.+?)\s+(?:dosyasını|dosyayi|dosyayı)\s+(.+?)\s+(?:klasörüne|klasorune|dizinine)\s+taşı$", c)
+    if m:
+        return {"label": "dosya taşı", "tool": "move_path",
+                "args": {"source": _known_path(m.group(1)), "destination": _known_path(m.group(2))}, "verify": "exists"}
+    m = re.search(r"(.+?)\s+(?:dosyasının|dosyasinin|dosyanın|dosyanin)\s+adını\s+(.+?)\s+(?:yap|olarak değiştir|olarak degistir)$", c)
+    if m:
+        return {"label": "dosya yeniden adlandır", "tool": "rename_path",
+                "args": {"path": _known_path(m.group(1)), "new_name": m.group(2).strip()}, "verify": "exists"}
+    m = re.search(r"(.+?)\s+(?:dosyasını|dosyayi|dosyayı|klasörünü|klasorunu)\s+sil$", c)
+    if m:
+        return {"label": "dosya/klasör sil", "tool": "delete_path",
+                "args": {"path": _known_path(m.group(1))}, "verify": "absent"}
+    m = re.search(r"(?:dosya|dosyayı|dosyayi|dosyayı)\s+(.+?)\s+bul$", c)
+    if m:
+        return {"label": f"dosya bul: {m.group(1).strip()}", "tool": "find_files",
+                "args": {"root": str(Path.home()), "pattern": m.group(1).strip()}, "verify": None}
     m = re.search(r"(chrome|edge|notepad|not defteri|hesap makinesi|calculator|discord|spotify)", c)
     if m and re.search(r"\baç\b", c):
         app = APP_MAP.get(m.group(1), m.group(1))
