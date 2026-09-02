@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+import shutil
 
 HOME = Path.home()
 
@@ -50,3 +51,43 @@ def read_text(path):
 
 def write_text(path, content):
     p=Path(path); p.parent.mkdir(parents=True,exist_ok=True); p.write_text(content,encoding="utf-8"); return str(p)
+
+def copy_path(source, destination):
+    src=Path(source).expanduser(); dst=Path(destination).expanduser()
+    if not src.exists(): raise FileNotFoundError(str(src))
+    if dst.exists(): raise FileExistsError(str(dst))
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if src.is_dir(): shutil.copytree(src, dst)
+    else: shutil.copy2(src, dst)
+    return {"source":str(src),"destination":str(dst)}
+
+def move_path(source, destination):
+    src=Path(source).expanduser(); dst=Path(destination).expanduser()
+    if not src.exists(): raise FileNotFoundError(str(src))
+    if dst.exists(): raise FileExistsError(str(dst))
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    result=shutil.move(str(src), str(dst))
+    return {"source":str(src),"destination":str(result)}
+
+def rename_path(path, new_name):
+    src=Path(path).expanduser()
+    if not src.exists(): raise FileNotFoundError(str(src))
+    name=Path(new_name).name
+    if name != new_name or not name: raise ValueError("new_name yalnızca dosya/klasör adı olmalı")
+    dst=src.with_name(name)
+    if dst.exists(): raise FileExistsError(str(dst))
+    src.rename(dst)
+    return {"source":str(src),"destination":str(dst)}
+
+def create_folder(path):
+    p=Path(path).expanduser()
+    if p.exists(): raise FileExistsError(str(p))
+    p.mkdir(parents=True)
+    return str(p)
+
+def delete_path(path):
+    p=Path(path).expanduser()
+    if not p.exists(): raise FileNotFoundError(str(p))
+    if p.is_dir(): shutil.rmtree(p)
+    else: p.unlink()
+    return str(p)
