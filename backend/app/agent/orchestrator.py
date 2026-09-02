@@ -33,7 +33,6 @@ def _known_path(value: str) -> str:
     direct = known_folder(raw)
     if direct:
         return str(direct)
-    # Resolve common-folder prefixes such as Downloads\\report.pdf.
     normalized = raw.replace("/", "\\")
     for alias in ("downloads", "indirilenler", "desktop", "masaüstü", "masaüstüm", "documents", "belgeler"):
         prefix = alias + "\\"
@@ -86,16 +85,10 @@ def parse_step(clause: str) -> dict | None:
         return {"label": "dosya/klasör sil", "tool": "delete_path",
                 "args": {"path": _known_path(m.group(1).strip())}, "verify": "absent"}
 
-    m = re.search(r"^(?:dosya|dosyayı|dosyayi)\s+(.+?)\s+bul$", c)
-    if m:
-        pattern = m.group(1).strip(" \"'")
-        return {"label": f"dosya bul: {pattern}", "tool": "find_files",
-                "args": {"root": str(Path.home()), "pattern": pattern}, "verify": None}
-
     m = re.search(r"^(?:dosya|dosyayı|dosyayi)\s+(.+?)\s+(?:bul|ara)$", c)
     if m:
         pattern = m.group(1).strip(" \"'")
-        return {"label": f"dosya ara: {pattern}", "tool": "find_files",
+        return {"label": f"dosya bul: {pattern}", "tool": "find_files",
                 "args": {"root": str(Path.home()), "pattern": pattern}, "verify": None}
 
     m = re.search(r"(.+?)\s+(?:klasöründe|klasorunde|dizininde)\s+(.+?)\s+(?:dosyasını\s+)?(?:bul|ara)$", c)
