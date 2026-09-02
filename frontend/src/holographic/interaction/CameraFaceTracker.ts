@@ -6,6 +6,18 @@ export interface FaceTrackingTarget {
   timestamp: number;
 }
 
+interface DetectedFace {
+  boundingBox: { x: number; y: number; width: number; height: number };
+}
+
+interface FaceDetectorLike {
+  detect(video: HTMLVideoElement): Promise<DetectedFace[]>;
+}
+
+interface FaceDetectorConstructor {
+  new (options?: { maxDetectedFaces?: number; fastMode?: boolean }): FaceDetectorLike;
+}
+
 export interface FaceTracker {
   start(video: HTMLVideoElement): Promise<boolean>;
   stop(): void;
@@ -14,7 +26,7 @@ export interface FaceTracker {
 }
 
 const target: FaceTrackingTarget = { x: 0, y: 0, confidence: 0, detected: false, timestamp: 0 };
-let detector: { detect(video: HTMLVideoElement): Promise<Array<{ boundingBox: { x: number; y: number; width: number; height: number } }>> } | null = null;
+let detector: FaceDetectorLike | null = null;
 let timer = 0;
 let active = false;
 
@@ -39,9 +51,7 @@ export const cameraFaceTracker: FaceTracker = {
       return false;
     }
 
-    const FaceDetectorCtor = (window as Window & {
-      FaceDetector?: new (options?: { maxDetectedFaces?: number; fastMode?: boolean }) => typeof detector;
-    }).FaceDetector;
+    const FaceDetectorCtor = (window as Window & { FaceDetector?: FaceDetectorConstructor }).FaceDetector;
     if (!FaceDetectorCtor) return false;
 
     detector = new FaceDetectorCtor({ maxDetectedFaces: 1, fastMode: true });
