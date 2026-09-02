@@ -46,3 +46,13 @@ def test_delete_and_rename_are_dangerous():
         "delete_path(dosya/klasör sil)",
         "rename_path(dosya yeniden adlandır)",
     ]
+
+
+def test_ordinary_ve_is_not_a_plan_separator():
+    steps = parse_plan("dosya ve klasör sayısını söyle")
+    assert steps == []
+
+
+def test_explicit_sequence_still_splits():
+    steps = parse_plan("notepad aç ve sonra hesap makinesi aç")
+    assert [s["tool"] for s in steps] == ["open_application", "open_application"]
