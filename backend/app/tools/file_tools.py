@@ -2,7 +2,6 @@ from pathlib import Path
 import shutil
 
 HOME = Path.home()
-WORKSPACE = Path.cwd().resolve()
 
 
 def known_folder(name):
@@ -55,10 +54,8 @@ def read_text(path):
     p=Path(path); return p.read_text(encoding="utf-8",errors="replace")[:50000]
 
 
-def write_text(path, content):
-    p=Path(path).expanduser().resolve()
-    if not _inside(p, WORKSPACE): raise PermissionError(f"write outside workspace rejected: {p}")
-    p.parent.mkdir(parents=True,exist_ok=True); p.write_text(content,encoding="utf-8"); return str(p)
+def _workspace():
+    return Path.cwd().resolve()
 
 
 def _inside(path, root):
@@ -71,8 +68,13 @@ def _inside(path, root):
 
 def _write_path(path):
     p=Path(path).expanduser().resolve()
-    if not _inside(p, WORKSPACE): raise PermissionError(f"filesystem write outside workspace rejected: {p}")
+    if not _inside(p, _workspace()): raise PermissionError(f"filesystem write outside workspace rejected: {p}")
     return p
+
+
+def write_text(path, content):
+    p=_write_path(path)
+    p.parent.mkdir(parents=True,exist_ok=True); p.write_text(content,encoding="utf-8"); return str(p)
 
 
 def copy_path(source, destination):
