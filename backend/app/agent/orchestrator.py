@@ -74,7 +74,7 @@ def parse_step(clause: str) -> dict | None:
     if m:
         pattern = m.group(1).strip(" \"'")
         return {"label": f"dosya bul: {pattern}", "tool": "find_files", "args": {"root": str(Path.home()), "pattern": pattern}, "verify": None}
-    m = re.search(r"(.+?)\s+(?:klasöründe|klasorunde|dizininde)\s+(.+?)\s+(?:dosyasını\s+)?(?:bul|ara)$", c)
+    m = re.search(r"(.+?)\s+(?:klasöründe|klasorunde|dizininde)\s+(.+?)(?:\s+dosyalarını|\s+dosyalarini|\s+dosyasını|\s+dosyasini)?\s+(?:bul|ara)$", c)
     if m:
         root, pattern = m.group(1).strip(), m.group(2).strip(" \"'")
         return {"label": f"dosya bul: {pattern}", "tool": "find_files", "args": {"root": _known_path(root), "pattern": pattern}, "verify": None}
