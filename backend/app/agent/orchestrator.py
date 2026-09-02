@@ -29,41 +29,81 @@ def _clause_split(text: str) -> list[str]:
 
 def _known_path(value: str) -> str:
     from app.tools.file_tools import known_folder
-    p = known_folder(value.strip(" \"'"))
-    return str(p) if p else str(Path(value.strip(" \"'" )).expanduser())
+    raw = value.strip(" \"'")
+    direct = known_folder(raw)
+    if direct:
+        return str(direct)
+    # Resolve common-folder prefixes such as Downloads\\report.pdf.
+    normalized = raw.replace("/", "\\")
+    for alias in ("downloads", "indirilenler", "desktop", "masaüstü", "masaüstüm", "documents", "belgeler"):
+        prefix = alias + "\\"
+        if normalized.lower().startswith(prefix):
+            base = known_folder(alias)
+            if base:
+                return str(Path(base) / normalized[len(prefix):])
+    return str(Path(raw).expanduser())
+
+
+def _destination_for_folder(source: str, folder: str) -> str:
+    return str(Path(_known_path(folder)) / Path(_known_path(source)).name)
 
 
 def parse_step(clause: str) -> dict | None:
-    c = clause.lower()
+    c = clause.lower().strip()
     # File operations are checked before generic application/browser rules.
-    m = re.search(r"(.+?)\s+(?:dosyasını|dosyayi|dosyayı|dosya(?:yı|yi|yi)?)\s+(?:oku|okuyabilir misin)", c)
+    m = re.search(r"(.+?)\s+(?:dosyasını|dosyayi|dosyayı|dosya(?:yı|yi)?)\s+(?:oku|okuyabilir misin)\s*$", c)
     if m:
         return {"label": f"dosya oku: {m.group(1).strip()}", "tool": "read_text",
                 "args": {"path": _known_path(m.group(1).strip())}, "verify": "text"}
-    m = re.search(r"(?:klasör|klasor|dizin)\s+(.+?)\s+(?:oluştur|olustur|aç|ac)$", c)
+
+    m = re.search(r"^(?:klasör|klasor|dizin)\s+(.+?)\s+(?:oluştur|olustur|aç|ac)$", c)
+    if not m:
+        m = re.search(r"^(.+?)\s+(?:klasörü|klasoru|klasörünü|klasorunu)\s+(?:oluştur|olustur|aç|ac)$", c)
     if m:
         return {"label": f"klasör oluştur: {m.group(1).strip()}", "tool": "create_folder",
                 "args": {"path": _known_path(m.group(1).strip())}, "verify": "exists"}
-    m = re.search(r"(.+?)\s+(?:dosyasını|dosyayi|dosyayı|dosyayı)\s+(.+?)\s+(?:klasörüne|klasorune|dizinine)\s+kopyala$", c)
+
+    m = re.search(r"(.+?)\s+(?:dosyasını|dosyayi|dosyayı)\s+(.+?)\s+(?:klasörüne|klasorune|dizinine)\s+kopyala$", c)
     if m:
+        src, folder = m.group(1).strip(), m.group(2).strip()
         return {"label": "dosya kopyala", "tool": "copy_path",
-                "args": {"source": _known_path(m.group(1)), "destination": _known_path(m.group(2))}, "verify": "exists"}
+                "args": {"source": _known_path(src), "destination": _destination_for_folder(src, folder)}, "verify": "exists"}
+
     m = re.search(r"(.+?)\s+(?:dosyasını|dosyayi|dosyayı)\s+(.+?)\s+(?:klasörüne|klasorune|dizinine)\s+taşı$", c)
     if m:
+        src, folder = m.group(1).strip(), m.group(2).strip()
         return {"label": "dosya taşı", "tool": "move_path",
-                "args": {"source": _known_path(m.group(1)), "destination": _known_path(m.group(2))}, "verify": "exists"}
+                "args": {"source": _known_path(src), "destination": _destination_for_folder(src, folder)}, "verify": "exists"}
+
     m = re.search(r"(.+?)\s+(?:dosyasının|dosyasinin|dosyanın|dosyanin)\s+adını\s+(.+?)\s+(?:yap|olarak değiştir|olarak degistir)$", c)
     if m:
+        new_name = m.group(2).strip(" \"'")
         return {"label": "dosya yeniden adlandır", "tool": "rename_path",
-                "args": {"path": _known_path(m.group(1)), "new_name": m.group(2).strip()}, "verify": "exists"}
+                "args": {"path": _known_path(m.group(1).strip()), "new_name": new_name}, "verify": "exists"}
+
     m = re.search(r"(.+?)\s+(?:dosyasını|dosyayi|dosyayı|klasörünü|klasorunu)\s+sil$", c)
     if m:
         return {"label": "dosya/klasör sil", "tool": "delete_path",
-                "args": {"path": _known_path(m.group(1))}, "verify": "absent"}
-    m = re.search(r"(?:dosya|dosyayı|dosyayi|dosyayı)\s+(.+?)\s+bul$", c)
+                "args": {"path": _known_path(m.group(1).strip())}, "verify": "absent"}
+
+    m = re.search(r"^(?:dosya|dosyayı|dosyayi)\s+(.+?)\s+bul$", c)
     if m:
-        return {"label": f"dosya bul: {m.group(1).strip()}", "tool": "find_files",
-                "args": {"root": str(Path.home()), "pattern": m.group(1).strip()}, "verify": None}
+        pattern = m.group(1).strip(" \"'")
+        return {"label": f"dosya bul: {pattern}", "tool": "find_files",
+                "args": {"root": str(Path.home()), "pattern": pattern}, "verify": None}
+
+    m = re.search(r"^(?:dosya|dosyayı|dosyayi)\s+(.+?)\s+(?:bul|ara)$", c)
+    if m:
+        pattern = m.group(1).strip(" \"'")
+        return {"label": f"dosya ara: {pattern}", "tool": "find_files",
+                "args": {"root": str(Path.home()), "pattern": pattern}, "verify": None}
+
+    m = re.search(r"(.+?)\s+(?:klasöründe|klasorunde|dizininde)\s+(.+?)\s+(?:dosyasını\s+)?(?:bul|ara)$", c)
+    if m:
+        root, pattern = m.group(1).strip(), m.group(2).strip(" \"'")
+        return {"label": f"dosya bul: {pattern}", "tool": "find_files",
+                "args": {"root": _known_path(root), "pattern": pattern}, "verify": None}
+
     m = re.search(r"(chrome|edge|notepad|not defteri|hesap makinesi|calculator|discord|spotify)", c)
     if m and re.search(r"\baç\b", c):
         app = APP_MAP.get(m.group(1), m.group(1))
