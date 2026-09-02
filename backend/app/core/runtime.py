@@ -11,7 +11,7 @@ from app.security.permissions import PermissionManager
 from app.security.audit import AuditLog
 from app.tools.system_tools import system_status
 from app.tools.windows_tools import open_application, open_url, close_application, open_file, open_folder
-from app.tools.file_tools import find_files, read_text, write_text, list_directory, find_project
+from app.tools.file_tools import find_files, read_text, write_text, list_directory, find_project, copy_path, move_path, rename_path, create_folder, delete_path
 from app.tools.browser_tools import search_web
 from app.tools.diagnostic_tools import run_diagnostic
 from app.tools.calculator import calculate
@@ -189,6 +189,30 @@ class UltronRuntime:
         reg.register('calculate',calculate,'Güvenli matematik hesaplar.',{'type':'object','properties':{'text':{'type':'string'}},'required':['text']})
         reg.register('list_directory',lambda root: sandboxed_list_directory(self.sandbox, root),'Klasör içeriğini listeler (sandbox içinde).',{'type':'object','properties':{'root':{'type':'string'}},'required':['root']})
         reg.register('find_files',lambda root,pattern: sandboxed_find_files(self.sandbox, root, pattern),'Dosya arar (sandbox içinde).',{'type':'object','properties':{'root':{'type':'string'},'pattern':{'type':'string'}},'required':['root','pattern']})
+        # ---- File Agent 2.0: mutating filesystem tools (sandbox + approval gate) ----
+        def _copy_path(source, destination):
+            src=self.sandbox.validate_read(source)
+            dst_dir=self.sandbox.validate_write(destination)
+            dst=dst_dir / Path(src).name
+            return copy_path(src, dst)
+        def _move_path(source, destination):
+            src=self.sandbox.validate_read(source)
+            dst_dir=self.sandbox.validate_write(destination)
+            dst=dst_dir / Path(src).name
+            return move_path(src, dst)
+        def _rename_path(path, new_name):
+            src=self.sandbox.validate_write(path)
+            dst=self.sandbox.validate_write(src.with_name(Path(new_name).name))
+            return rename_path(src, new_name)
+        def _create_folder(path):
+            return create_folder(self.sandbox.validate_write(path))
+        def _delete_path(path):
+            return delete_path(self.sandbox.validate_write(path))
+        reg.register('copy_path',_copy_path,'Dosya veya klasörü sandbox içinde kopyalar; onay gerekir.',{'type':'object','properties':{'source':{'type':'string'},'destination':{'type':'string'}},'required':['source','destination']},dangerous=True)
+        reg.register('move_path',_move_path,'Dosya veya klasörü sandbox içinde taşır; onay gerekir.',{'type':'object','properties':{'source':{'type':'string'},'destination':{'type':'string'}},'required':['source','destination']},dangerous=True)
+        reg.register('rename_path',_rename_path,'Dosya veya klasör adını değiştirir; onay gerekir.',{'type':'object','properties':{'path':{'type':'string'},'new_name':{'type':'string'}},'required':['path','new_name']},dangerous=True)
+        reg.register('create_folder',_create_folder,'Yeni klasör oluşturur; onay gerekir.',{'type':'object','properties':{'path':{'type':'string'}},'required':['path']},dangerous=True)
+        reg.register('delete_path',_delete_path,'Dosya veya klasörü siler; onay gerekir.',{'type':'object','properties':{'path':{'type':'string'}},'required':['path']},dangerous=True)
         # ---- Browser Agent (PHASE 8) — real Playwright-backed browsing ----
         br=lambda: self._get_browser()
         reg.register('browser_navigate',lambda url: br().navigate(url),'URL adresine gider, baslik/durum doner (gercek tarayıcı).',{'type':'object','properties':{'url':{'type':'string'}},'required':['url']})
@@ -198,7 +222,7 @@ class UltronRuntime:
         reg.register('browser_verify',lambda url_contains=None,title_contains=None,selector_exists=None,text_contains=None: br().verify(url_contains,title_contains,selector_exists,text_contains),'Sayfayı gözlemleyip beklentileri doğrular (OBSERVE+VERIFY).',{'type':'object','properties':{'url_contains':{'type':'string'},'title_contains':{'type':'string'},'selector_exists':{'type':'string'},'text_contains':{'type':'string'}},'required':[]})
         reg.register('browser_click',lambda selector: br().click(selector),'Sayfadaki elemente tıklar; onay gerekir (gerçek tarayıcı eylemi).',{'type':'object','properties':{'selector':{'type':'string'}},'required':['selector']},dangerous=True)
         reg.register('browser_type',lambda selector,text,press_enter=False: br().type(selector,text,press_enter),'Alanı doldurur (opsiyonel Enter); onay gerekir.',{'type':'object','properties':{'selector':{'type':'string'},'text':{'type':'string'},'press_enter':{'type':'boolean'}},'required':['selector','text']},dangerous=True)
-        reg.register('browser_select',lambda selector,value: br().select(selector,value),'Dropdown seçer; onay gerekir.',{'type':'object','properties':{'selector':{'type':'string'},'value':{'type':'string'}},'required':['selector','value']},dangerous=True)
+        reg.register('browser_select',lambda selector,value: br().select(selector,value),'Dropdown seçer; onay gerekir.',{'type':'object','properties':{'selector':{'type':'string'},'value':{'type':'string'}},'required':['selector','value']},'required':['selector','value'],dangerous=True)
         # ---- Computer Use (PHASE 8): process inspection + system settings ----
         from app.tools.system_tools import process_list,process_info,process_kill,system_settings_view
         reg.register('process_list',lambda sort='cpu',limit=30,name=None: process_list(sort,limit,name),'Süreç listeler (cpu/bellek sıralı, gerçek psutil).',{'type':'object','properties':{'sort':{'type':'string'},'limit':{'type':'number'},'name':{'type':'string'}},'required':[]})
