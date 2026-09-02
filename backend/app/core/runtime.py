@@ -206,6 +206,7 @@ class UltronRuntime:
     def reload_config(self):
         self.settings=json.loads(Path(self.settings_path).read_text(encoding='utf-8')); self.agent.persona.mode=self.settings.get('persona_guard_mode','reframe'); pm=self.settings.get('proactive',{}); self.proactive.ram_limit=float(pm.get('ram_warning_percent',90)); self.proactive.cpu_limit=float(pm.get('cpu_warning_percent',95)); self.proactive.disk_limit=float(pm.get('disk_warning_percent',95)); return self.settings
     def start_proactive(self):self.proactive.start()
+    def _proactive_event(self,message):self.memory.add('proactive',message);self.audit.write('PROACTIVE',message);print(f'[ULTRON] {message}')
     def _get_browser(self):
         if self._browser_agent is None:
             from app.browser.agent import BrowserAgent
