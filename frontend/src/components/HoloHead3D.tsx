@@ -3,11 +3,12 @@ import * as THREE from "three";
 import { ttsLevel } from "../lib/tts";
 import { getState, useApp } from "../lib/store";
 import { resolveTheme } from "../styles/themes";
+import { cameraFaceTracker } from "../holographic/interaction/CameraFaceTracker";
 
 /**
  * HoloHead3D — procedural cybernetic head (Three.js, light).
- * Mouse parallax look-at · state animations · theme-aware accent ·
- * SPEAKING jaw/eye sync via ttsLevel · DEEP_COMPUTE neuron particles.
+ * Mouse parallax + optional camera face tracking · state animations ·
+ * theme-aware accent · SPEAKING jaw/eye sync via ttsLevel.
  */
 export function HoloHead3D() {
   const ref = useRef<HTMLDivElement>(null);
@@ -81,7 +82,6 @@ export function HoloHead3D() {
     head.add(neck);
     scene.add(head);
 
-    // data rings (LISTENING spins faster)
     const rings: THREE.Mesh[] = [];
     const ringMats: THREE.MeshBasicMaterial[] = [];
     for (let i = 0; i < 3; i++) {
@@ -91,7 +91,6 @@ export function HoloHead3D() {
       rings.push(r);
       scene.add(r);
     }
-    // neuron particles (DEEP_COMPUTE accelerates)
     const N = 260;
     const base = new Float32Array(N * 3);
     for (let i = 0; i < N; i++) {
@@ -107,7 +106,7 @@ export function HoloHead3D() {
     const pMat = T(new THREE.PointsMaterial({ color: 0xff1e42, size: 0.02, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false }));
     const neurons = new THREE.Points(pGeo, pMat);
     scene.add(neurons);
-    // glow sprite
+
     const gc = document.createElement("canvas");
     gc.width = gc.height = 128;
     const g2 = gc.getContext("2d")!;
@@ -123,7 +122,6 @@ export function HoloHead3D() {
     glow.scale.setScalar(3.4);
     scene.add(glow);
 
-    // mouse parallax
     const mouse = { x: 0, y: 0 };
     const onMove = (e: MouseEvent) => {
       mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
@@ -161,18 +159,18 @@ export function HoloHead3D() {
       ringMats[2].color.copy(accent.cur);
       key.color.copy(accent.cur).lerp(new THREE.Color("#ffffff"), 0.6);
 
-      // IDLE floating bob + breathing glow
       const speaking = st.ttsSpeaking;
       const amp = speaking ? ttsLevel.current : 0;
       head.position.y = Math.sin(t * 1.1) * 0.05;
       glowMat.opacity = 0.35 + 0.12 * Math.sin(t * 1.6) + amp * 0.5;
 
-      // mouse parallax look-at (smooth lerp)
-      const tx = mouse.x * 0.55, ty = -mouse.y * 0.3;
-      head.rotation.y += (tx - head.rotation.y) * Math.min(1, dt * 5);
-      head.rotation.x += (ty - head.rotation.x) * Math.min(1, dt * 5);
+      // Camera face target takes priority when a face is detected; mouse remains the fallback.
+      const faceTarget = cameraFaceTracker.getTarget();
+      const targetX = faceTarget.detected ? faceTarget.x * 0.7 : mouse.x * 0.55;
+      const targetY = faceTarget.detected ? -faceTarget.y * 0.38 : -mouse.y * 0.3;
+      head.rotation.y += (targetX - head.rotation.y) * Math.min(1, dt * 5);
+      head.rotation.x += (targetY - head.rotation.x) * Math.min(1, dt * 5);
 
-      // state animations
       const listening = state === "LISTENING" || st.mic === "listening";
       const deep = ["THINKING", "PLANNING", "EXECUTING", "VERIFYING"].includes(state);
       const ringSpeed = listening ? 2.6 : deep ? 1.6 : alert ? 4 : 0.5;
@@ -182,10 +180,9 @@ export function HoloHead3D() {
       });
       const eyeBoost = listening ? 1.5 : alert ? 2.2 : 1 + amp * 2;
       eyes.forEach((e) => e.scale.set(1.6 * eyeBoost * 0.75, 0.7 * (listening ? 1.2 : 1), 0.5));
-      // SPEAKING jaw sync
       jaw.rotation.x = amp * 0.45 + (speaking ? 0.05 * Math.sin(t * 30) : 0);
       mouthMat.opacity = 0.35 + amp * 0.65;
-      // DEEP_COMPUTE neurons
+
       const nspeed = deep ? 3.4 : alert ? 5 : 0.6;
       neurons.rotation.y += dt * nspeed;
       const pos = pGeo.getAttribute("position") as THREE.BufferAttribute;
@@ -198,7 +195,6 @@ export function HoloHead3D() {
         arr[i * 3 + 2] = base[i * 3 + 2] * k;
       }
       pos.needsUpdate = true;
-
       renderer.render(scene, camera);
     };
     raf = requestAnimationFrame(loop);
