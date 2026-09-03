@@ -56,6 +56,12 @@ class CodeAnalysisWorker(Worker):
 
 
 class TestWorker(Worker):
+    """Worker adapter for the project test suite.
+
+    The class name is part of the public supervisor API, but pytest would
+    otherwise mistake it for a test container because it starts with Test.
+    """
+    __test__ = False
     id = "tests"
     label = "Project test suite"
     alt = None
