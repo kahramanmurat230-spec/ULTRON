@@ -1,10 +1,4 @@
-"""Safe execution layer for validated local-LLM plans.
-
-The Planner only produces/validates plans. This module owns execution so the
-planner cannot directly invoke tools. It enforces dependencies, approval,
-step bounds, bounded retries, and explicit per-step results.
-"""
-import json
+"""Safe execution layer for validated local-LLM plans."""
 import time
 
 
@@ -25,7 +19,7 @@ class HybridPlanExecutor:
         if not value.startswith(prefix) or not value.endswith("}}"):
             return value
         try:
-            index, field = value[8:-2].split(".", 1)
+            index, field = value[len(prefix):-2].split(".", 1)
             item = results[int(index)]
             if field == "result":
                 return item.get("result")
@@ -47,7 +41,6 @@ class HybridPlanExecutor:
         steps = plan.get("steps") or []
         if not steps or len(steps) > self.MAX_STEPS:
             return {"ok": False, "error": "Plan adım sınırı geçersiz.", "steps": []}
-
         results = []
         started = time.monotonic()
         for i, step in enumerate(steps):
@@ -58,16 +51,13 @@ class HybridPlanExecutor:
             if reg is None:
                 results.append({"index": i, "tool": tool, "ok": False, "error": "Tool not registered"})
                 return {"ok": False, "status": "FAILED", "steps": results}
-
             deps = step.get("depends_on") or []
             if any(d >= len(results) or not results[d].get("ok") for d in deps):
                 results.append({"index": i, "tool": tool, "ok": False, "status": "SKIPPED", "error": "Dependency failed"})
                 return {"ok": False, "status": "FAILED", "steps": results}
-
             if reg.get("dangerous") and not approved:
                 results.append({"index": i, "tool": tool, "ok": False, "status": "WAITING_APPROVAL", "error": f"Confirmation required for: {tool}"})
                 return {"ok": False, "status": "WAITING_APPROVAL", "steps": results}
-
             try:
                 args = self._resolve_args(step.get("arguments", {}), results)
                 last_error = None
@@ -80,9 +70,8 @@ class HybridPlanExecutor:
                         last_error = exc
                         if attempt >= self.MAX_RETRIES:
                             raise
-                results.append({"index": i, "tool": tool, "ok": True, "result": output, "attempts": (attempt + 1)})
+                results.append({"index": i, "tool": tool, "ok": True, "result": output, "attempts": attempt + 1})
             except Exception as exc:
-                results.append({"index": i, "tool": tool, "ok": False, "error": str(last_error or exc), "attempts": (attempt + 1)})
+                results.append({"index": i, "tool": tool, "ok": False, "error": str(last_error or exc), "attempts": attempt + 1})
                 return {"ok": False, "status": "FAILED", "steps": results}
-
         return {"ok": True, "status": "DONE", "steps": results, "goal": plan.get("goal", "")}
