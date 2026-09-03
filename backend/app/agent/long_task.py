@@ -30,7 +30,8 @@ class LongTaskEngine:
         plan = list(steps)
         if len(plan) > self.max_steps:
             raise ValueError(f"Long task step limit exceeded: {len(plan)} > {self.max_steps}")
-        state = self.load() if task_id and self.load() and self.load().get("task_id") == task_id else None
+        loaded = self.load() if task_id else None
+        state = loaded if loaded and loaded.get("task_id") == task_id else None
         if state is None:
             state = {"task_id": task_id or uuid.uuid4().hex, "status": "RUNNING", "next_step": 0, "results": []}
         start = self.clock()
@@ -49,6 +50,13 @@ class LongTaskEngine:
                     state["results"].append({"index": idx, "ok": True, "result": result})
                     state["next_step"] = idx + 1
                     self._save(state)
+                    # A step that finishes after the hard deadline is successful work,
+                    # but the overall task must still stop and remain resumable.
+                    if deadline_s is not None and self.clock() - start >= deadline_s:
+                        state["status"] = "CANCELLED"
+                        state["reason"] = "hard_deadline"
+                        self._save(state)
+                        return state
                     break
                 except Exception as exc:
                     attempts += 1
