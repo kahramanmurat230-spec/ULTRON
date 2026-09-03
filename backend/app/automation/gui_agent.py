@@ -1,8 +1,6 @@
 """Bounded GUI agent: OBSERVE -> TARGET -> APPROVE -> ACT -> VERIFY."""
 from __future__ import annotations
-
 from dataclasses import dataclass, field
-
 
 @dataclass
 class GUIAction:
@@ -11,21 +9,16 @@ class GUIAction:
     params: dict = field(default_factory=dict)
     expected: dict = field(default_factory=dict)
 
-
 class GUIAgent:
     MAX_ACTIONS = 8
-
     def __init__(self, automation, approved=False):
         self.automation = automation
         self.approved = approved
-
     def observe(self):
         return self.automation.read_screen_elements()
-
     @staticmethod
     def target(elements, text):
         return GUIAutomationMatcher.find(elements, text)
-
     def execute(self, actions, approved=None):
         if len(actions) > self.MAX_ACTIONS:
             return {"ok": False, "status": "REJECTED", "error": "GUI action limit exceeded"}
@@ -40,6 +33,10 @@ class GUIAgent:
                     out = self.automation.click_text(action.params["text"], verify=True)
                 elif action.kind == "click":
                     out = self.automation.click(action.target["x"], action.target["y"])
+                elif action.kind == "double_click":
+                    out = self.automation.double_click(action.target["x"], action.target["y"])
+                elif action.kind == "right_click":
+                    out = self.automation.right_click(action.target["x"], action.target["y"])
                 elif action.kind == "type_text":
                     out = self.automation.type_text(action.params["text"])
                 elif action.kind == "press":
@@ -55,7 +52,6 @@ class GUIAgent:
                 results.append({"ok": False, "action": action.kind, "error": str(exc)})
                 return {"ok": False, "status": "FAILED", "results": results}
         return {"ok": True, "status": "DONE", "results": results}
-
 
 class GUIAutomationMatcher:
     @staticmethod
