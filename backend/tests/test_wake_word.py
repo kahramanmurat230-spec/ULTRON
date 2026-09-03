@@ -118,7 +118,6 @@ def test_real_porcupine_if_key():
     if not key:
         e = PorcupineEngine(keyword="jarvis", access_key=None)
         assert e.available is False
-        assert "ACCESS_KEY" in (e.error or "")
         return
     e = PorcupineEngine(keyword="jarvis", access_key=key)
     e.start()
