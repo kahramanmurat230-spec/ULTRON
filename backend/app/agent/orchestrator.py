@@ -2,7 +2,7 @@
 
 USER REQUEST → INTENT → CONTEXT → PLAN → RISK ANALYSIS → [WAITING_APPROVAL]
 → TOOL SELECTION → EXECUTION (per-step VERIFY) → RECOVERY (1 safe retry /
-alternative) → DONE/ERROR.  Simple questions never enter the planner.
+alternative) → DONE/ERROR. Simple questions never enter the planner.
 No infinite retries. No fake success.
 """
 import re
@@ -21,68 +21,79 @@ DANGEROUS_TOOLS = {"gui_click", "gui_double_click", "gui_right_click", "gui_type
 
 
 def _clause_split(text: str) -> list[str]:
-    t = re.sub(r"\s+ve\s+(?:sonra\s+)?", " | ", text, flags=re.I)
-    t = re.sub(r"\s+sonra\s+", " | ", t, flags=re.I)
-    parts = [p.strip(" ,.;") for p in re.split(r"\||,", t) if p.strip(" ,.;")]
-    return parts
+    """Split only explicit sequencing markers; never split ordinary 've' or commas."""
+    t = re.sub(r"\s+(?:ve\s+)?(?:sonra|ardından|ardindan)\s+", " | ", text, flags=re.I)
+    return [p.strip(" ,.;") for p in t.split("|") if p.strip(" ,.;")]
 
 
 def _known_path(value: str) -> str:
     from app.tools.file_tools import known_folder
-    p = known_folder(value.strip(" \"'"))
-    return str(p) if p else str(Path(value.strip(" \"'" )).expanduser())
+    raw = value.strip(" \"'")
+    direct = known_folder(raw)
+    if direct:
+        return str(direct)
+    normalized = raw.replace("/", "\\")
+    for alias in ("downloads", "indirilenler", "desktop", "masaüstü", "masaüstüm", "documents", "belgeler"):
+        prefix = alias + "\\"
+        if normalized.lower().startswith(prefix):
+            base = known_folder(alias)
+            if base:
+                return str(Path(base) / normalized[len(prefix):])
+    return str(Path(raw).expanduser())
+
+
+def _destination_for_folder(source: str, folder: str) -> str:
+    return str(Path(_known_path(folder)) / Path(_known_path(source)).name)
 
 
 def parse_step(clause: str) -> dict | None:
-    c = clause.lower()
-    # File operations are checked before generic application/browser rules.
-    m = re.search(r"(.+?)\s+(?:dosyasını|dosyayi|dosyayı|dosya(?:yı|yi|yi)?)\s+(?:oku|okuyabilir misin)", c)
+    c = clause.lower().strip()
+    m = re.search(r"(.+?)\s+(?:dosyasını|dosyayi|dosyayı|dosya(?:yı|yi)?)\s+(?:oku|okuyabilir misin)\s*$", c)
     if m:
-        return {"label": f"dosya oku: {m.group(1).strip()}", "tool": "read_text",
-                "args": {"path": _known_path(m.group(1).strip())}, "verify": "text"}
-    m = re.search(r"(?:klasör|klasor|dizin)\s+(.+?)\s+(?:oluştur|olustur|aç|ac)$", c)
+        return {"label": f"dosya oku: {m.group(1).strip()}", "tool": "read_text", "args": {"path": _known_path(m.group(1).strip())}, "verify": "text"}
+    m = re.search(r"^(?:klasör|klasor|dizin)\s+(.+?)\s+(?:oluştur|olustur|aç|ac)$", c)
+    if not m:
+        m = re.search(r"^(.+?)\s+(?:klasörü|klasoru|klasörünü|klasorunu)\s+(?:oluştur|olustur|aç|ac)$", c)
     if m:
-        return {"label": f"klasör oluştur: {m.group(1).strip()}", "tool": "create_folder",
-                "args": {"path": _known_path(m.group(1).strip())}, "verify": "exists"}
-    m = re.search(r"(.+?)\s+(?:dosyasını|dosyayi|dosyayı|dosyayı)\s+(.+?)\s+(?:klasörüne|klasorune|dizinine)\s+kopyala$", c)
+        return {"label": f"klasör oluştur: {m.group(1).strip()}", "tool": "create_folder", "args": {"path": _known_path(m.group(1).strip())}, "verify": "exists"}
+    m = re.search(r"(.+?)\s+(?:dosyasını|dosyayi|dosyayı)\s+(.+?)\s+(?:klasörüne|klasorune|dizinine)\s+kopyala$", c)
     if m:
-        return {"label": "dosya kopyala", "tool": "copy_path",
-                "args": {"source": _known_path(m.group(1)), "destination": _known_path(m.group(2))}, "verify": "exists"}
+        src, folder = m.group(1).strip(), m.group(2).strip()
+        return {"label": "dosya kopyala", "tool": "copy_path", "args": {"source": _known_path(src), "destination": _destination_for_folder(src, folder)}, "verify": "exists"}
     m = re.search(r"(.+?)\s+(?:dosyasını|dosyayi|dosyayı)\s+(.+?)\s+(?:klasörüne|klasorune|dizinine)\s+taşı$", c)
     if m:
-        return {"label": "dosya taşı", "tool": "move_path",
-                "args": {"source": _known_path(m.group(1)), "destination": _known_path(m.group(2))}, "verify": "exists"}
+        src, folder = m.group(1).strip(), m.group(2).strip()
+        return {"label": "dosya taşı", "tool": "move_path", "args": {"source": _known_path(src), "destination": _destination_for_folder(src, folder)}, "verify": "exists"}
     m = re.search(r"(.+?)\s+(?:dosyasının|dosyasinin|dosyanın|dosyanin)\s+adını\s+(.+?)\s+(?:yap|olarak değiştir|olarak degistir)$", c)
     if m:
-        return {"label": "dosya yeniden adlandır", "tool": "rename_path",
-                "args": {"path": _known_path(m.group(1)), "new_name": m.group(2).strip()}, "verify": "exists"}
+        return {"label": "dosya yeniden adlandır", "tool": "rename_path", "args": {"path": _known_path(m.group(1).strip()), "new_name": m.group(2).strip(" \"'")}, "verify": "exists"}
     m = re.search(r"(.+?)\s+(?:dosyasını|dosyayi|dosyayı|klasörünü|klasorunu)\s+sil$", c)
     if m:
-        return {"label": "dosya/klasör sil", "tool": "delete_path",
-                "args": {"path": _known_path(m.group(1))}, "verify": "absent"}
-    m = re.search(r"(?:dosya|dosyayı|dosyayi|dosyayı)\s+(.+?)\s+bul$", c)
+        return {"label": "dosya/klasör sil", "tool": "delete_path", "args": {"path": _known_path(m.group(1).strip())}, "verify": "absent"}
+    m = re.search(r"^(?:dosya|dosyayı|dosyayi)\s+(.+?)\s+(?:bul|ara)$", c)
     if m:
-        return {"label": f"dosya bul: {m.group(1).strip()}", "tool": "find_files",
-                "args": {"root": str(Path.home()), "pattern": m.group(1).strip()}, "verify": None}
+        pattern = m.group(1).strip(" \"'")
+        return {"label": f"dosya bul: {pattern}", "tool": "find_files", "args": {"root": str(Path.home()), "pattern": pattern}, "verify": None}
+    m = re.search(r"(.+?)\s+(?:klasöründe|klasorunde|dizininde)\s+(.+?)(?:\s+dosyalarını|\s+dosyalarini|\s+dosyasını|\s+dosyasini)?\s+(?:bul|ara)$", c)
+    if m:
+        root, pattern = m.group(1).strip(), m.group(2).strip(" \"'")
+        return {"label": f"dosya bul: {pattern}", "tool": "find_files", "args": {"root": _known_path(root), "pattern": pattern}, "verify": None}
     m = re.search(r"(chrome|edge|notepad|not defteri|hesap makinesi|calculator|discord|spotify)", c)
     if m and re.search(r"\baç\b", c):
         app = APP_MAP.get(m.group(1), m.group(1))
-        return {"label": f"{app} aç", "tool": "open_application", "args": {"name": app},
-                "verify": "find_window"}
+        return {"label": f"{app} aç", "tool": "open_application", "args": {"name": app}, "verify": "find_window"}
     m = re.search(r"google'?d[ae]\s+(.+?)(?:\bara\b|\baraştır\b|\bsearch\b|$)", c)
     if m:
         q = m.group(1).strip(" .")
         if q:
             from urllib.parse import quote_plus
-            return {"label": f"Google: {q}", "tool": "open_url",
-                    "args": {"url": "https://www.google.com/search?q=" + quote_plus(q)}, "verify": None}
+            return {"label": f"Google: {q}", "tool": "open_url", "args": {"url": "https://www.google.com/search?q=" + quote_plus(q)}, "verify": None}
     m = re.search(r"(https?://\S+)", clause)
     if m:
         return {"label": f"URL aç: {m.group(1)[:40]}", "tool": "open_url", "args": {"url": m.group(1)}, "verify": None}
     if "hava durumu" in c:
         from urllib.parse import quote_plus
-        return {"label": "hava durumu", "tool": "open_url",
-                "args": {"url": "https://www.google.com/search?q=" + quote_plus("hava durumu")}, "verify": None}
+        return {"label": "hava durumu", "tool": "open_url", "args": {"url": "https://www.google.com/search?q=" + quote_plus("hava durumu")}, "verify": None}
     if re.search(r"ekran görüntüsü|\bscreenshot\b", c):
         return {"label": "screenshot", "tool": "capture_screen", "args": {}, "verify": "png"}
     if re.search(r"\bcpu\b|\bram\b|sistem durumu|telemetry", c):
@@ -108,10 +119,8 @@ def parse_plan(text: str) -> list[dict]:
 def risk_report(steps: list[dict]) -> list[str]:
     return [f"{s['tool']}({s['label']})" for s in steps if s["dangerous"]]
 
-
 ALTERNATIVES = {"open_application": None, "open_url": "search_web", "capture_screen": None}
 RETRYABLE = ("refused", "timeout", "temporarily", "10061", "econn")
-
 
 def should_retry(error: str) -> bool:
     e = (error or "").lower()
