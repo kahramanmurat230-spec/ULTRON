@@ -18,7 +18,6 @@ import re
 import time
 from dataclasses import dataclass, field
 
-# kaynak güven sıralaması (§10 zinciri)
 SOURCE_RANK = {
     "uia": 0.95, "window": 0.85, "dom": 0.90, "vision": 0.75,
     "ocr": 0.65, "coordinate": 0.20,
@@ -32,7 +31,6 @@ def norm_text(s: str) -> str:
     return " ".join((s or "").translate(_TR_MAP).lower().split())
 
 
-# renk adları → RGB yaklaşık aralıkları (grounding için)
 _COLOR_RGB = {
     "mavi": (40, 90, 220), "blue": (40, 90, 220),
     "kırmızı": (220, 50, 50), "red": (220, 50, 50),
@@ -48,17 +46,16 @@ _COLOR_RGB = {
 
 @dataclass
 class UIElement:
-    """Birleştirilmiş UI hedefi — her kaynak aynı şemaya düşer."""
-    identity: str                       # kaynak-içi benzersiz kimlik
-    name: str                           # görünür metin/ad
-    role: str                           # button/link/input/text/...
-    bbox: tuple[int, int, int, int]     # x, y, w, h
-    source: str                         # uia/window/dom/vision/ocr/coordinate
-    confidence: float                   # kaynağın güveni × eşleşme gücü
-    visibility: str = "visible"         # visible|partial|hidden
+    identity: str
+    name: str
+    role: str
+    bbox: tuple[int, int, int, int]
+    source: str
+    confidence: float
+    visibility: str = "visible"
     enabled: bool = True
     attributes: dict = field(default_factory=dict)
-    frame_id: str | None = None         # stale denetimi için
+    frame_id: str | None = None
     captured_at: float = 0.0
 
     def center(self) -> tuple[int, int]:
@@ -77,12 +74,8 @@ class ProviderUnavailable(RuntimeError):
     """Katman gerçek capability gerektiriyor ve bu ortamda yok."""
 
 
-# ---------------------------------------------------------------- providers
 class UIAProvider:
-    """Windows UI Automation (§10 birincil) — comtypes gerçek UIA.
-
-    Linux/headless'ta dürüst unavailable. elemanlar: role/name/bbox/enabled.
-    """
+    """Windows UI Automation (§10 birincil) — comtypes gerçek UIA."""
 
     NAME = "uia"
 
@@ -104,8 +97,7 @@ class UIAProvider:
                 "error": self.error}
 
     def elements(self) -> list[UIElement]:
-        raise ProviderUnavailable(
-            f"UIA bu ortamda yok: {self.error}")  # gerçek Windows'ta doldurulur
+        raise ProviderUnavailable(f"UIA bu ortamda yok: {self.error}")
 
 
 class WindowMetadataProvider:
@@ -140,7 +132,7 @@ class OCRProvider:
         self.image_path = image_path
         try:
             import pytesseract
-            pytesseract.get_tesseract_version()   # binary de gerçek olsun
+            pytesseract.get_tesseract_version()
         except Exception as exc:  # noqa: BLE001
             self.available = False
             self.error = f"tesseract yok ({str(exc)[:80]})"
@@ -155,7 +147,6 @@ class OCRProvider:
     def elements(self, image_bytes: bytes | None = None,
                  min_conf: int = 40) -> list[UIElement]:
         """Gerçek OCR: görüntüyü (path/bytes) analiz eder → UIElement."""
-        import io
         import tempfile
         from pathlib import Path
         from app.vision.analyze import ocr_elements, VisionFoundationError
@@ -184,7 +175,6 @@ class OCRProvider:
         return out
 
 
-# ---------------------------------------------------------------- hierarchy
 class UIHierarchy:
     """Katman zinciri: ilk gerçek veren kaynak kullanılır (§10 sırası)."""
 
@@ -214,12 +204,11 @@ class UIHierarchy:
             + " | ".join(errors[:3]))
 
 
-# ---------------------------------------------------------------- grounding
 @dataclass
 class GroundedTarget:
     element: UIElement
     query: str
-    match_kind: str                     # exact | partial | color | coordinate
+    match_kind: str
     alternatives: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -232,7 +221,6 @@ class GroundedTarget:
                 "alternatives": [a.to_dict() for a in self.alternatives]}
 
 
-# sıfat→tür çıkarımı (basit TR/EN)
 _TYPE_HINTS = {"buton": "button", "button": "button", "link": "link",
                "bağlantı": "link", "alan": "input", "kutusu": "input",
                "input": "input", "sekme": "tab", "tab": "tab",
@@ -240,7 +228,7 @@ _TYPE_HINTS = {"buton": "button", "button": "button", "link": "link",
 
 
 def _parse_query(query: str) -> dict:
-    """'mavi butona tıkla' → {color, type, text} — saf dil bilgisiz ayrım."""
+    """'mavi butona tıkla' → {color, type, text}."""
     q = norm_text(query)
     color = next((c for c in _COLOR_RGB if c in q), None)
     etype = next((t for h, t in _TYPE_HINTS.items() if h in q), None)
@@ -249,17 +237,11 @@ def _parse_query(query: str) -> dict:
 
 def ground(query: str, elements: list[UIElement],
            *, min_confidence: float = 0.25) -> GroundedTarget | None:
-    """Metin/renk/tür sorgusu → element + bbox + confidence.
-
-    Coordinate körü körüne KULLANILMAZ: coordinate kaynaklı elementler
-    yalnız açıkça verilmişse ve düşük güvenle eşleşir.
-    Eşleşme yoksa None — tahmin YOK.
-    """
+    """Metin/renk/tür sorgusu → element + bbox + confidence."""
     if not elements:
         return None
     parsed = _parse_query(query)
     qtext = parsed["norm"]
-    # sorgudan tür/sıfat kelimelerini çıkar → kalan = aranan metin
     leftover = qtext
     for w in list(_TYPE_HINTS) + list(_COLOR_RGB):
         leftover = leftover.replace(w, " ")
@@ -277,7 +259,6 @@ def ground(query: str, elements: list[UIElement],
             score = 1.0 if leftover == name else 0.7
             kind = "exact" if score == 1.0 else "partial"
         elif parsed["color"]:
-            # renk grounding: element bbox'ının görüntüdeki baskın rengi
             dom = el.attributes.get("dominant_rgb")
             if dom and _color_close(dom, _COLOR_RGB[parsed["color"]]):
                 score = 0.6
@@ -293,7 +274,7 @@ def ground(query: str, elements: list[UIElement],
     scored.sort(key=lambda t: t[0], reverse=True)
     best_score, best, kind = scored[0]
     if best_score < min_confidence:
-        return None                     # düşük güven → hedefleme RED
+        return None
     return GroundedTarget(element=best, query=query, match_kind=kind,
                           alternatives=[el for _, el, _ in scored[1:3]])
 
@@ -303,8 +284,7 @@ def _color_close(a: tuple, b: tuple, tol: int = 90) -> bool:
 
 
 def dominant_rgb(image_bytes: bytes, bbox=None) -> tuple | None:
-    """Görüntü (veya bbox bölgesi) baskın rengi — grounding için gerçek
-    görüntü analizi (PIL); hata → None (tahmin yok)."""
+    """Görüntü (veya bbox bölgesi) baskın rengi — PIL ile gerçek analiz."""
     import io
     try:
         from PIL import Image
@@ -313,7 +293,9 @@ def dominant_rgb(image_bytes: bytes, bbox=None) -> tuple | None:
             x, y, w, h = bbox
             img = img.crop((x, y, x + w, y + h))
         img = img.resize((8, 8))
-        px = list(img.getdata())
+        # Pillow 11+ exposes get_flattened_data; use it to avoid the
+        # deprecated Image.getdata() API and its CI warning.
+        px = list(img.get_flattened_data())
         r = sum(p[0] for p in px) // len(px)
         g = sum(p[1] for p in px) // len(px)
         b = sum(p[2] for p in px) // len(px)
