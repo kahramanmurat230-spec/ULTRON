@@ -19,12 +19,16 @@ def parse_browser_plan(text: str) -> list[dict]:
     clauses = _split(text or "")
     steps = []
     for c in clauses:
-        low = c.lower()
+        low = c.lower().strip()
+        # Accept both natural forms: "siteye URL aç" and "URL aç".
         m = re.search(r"(?:siteye|adrese|url'ye|url ye|sayfaya)\s+(https?://\S+|[\w.-]+\.[a-z]{2,}(?:/\S*)?)\s*(?:git|aç|ac)$", low, re.I)
+        if not m:
+            m = re.search(r"^(?:https?://\S+|[\w.-]+\.[a-z]{2,}(?:/\S*)?)\s+(?:git|aç|ac)$", low, re.I)
         if not m:
             m = re.search(r"^(?:git|aç|ac)\s+(https?://\S+|[\w.-]+\.[a-z]{2,}(?:/\S*)?)$", low, re.I)
         if m:
-            steps.append({"label": "browser navigate", "tool": "browser_navigate", "args": {"url": m.group(1)}})
+            url = m.group(1) if m.lastindex == 1 else m.group(0).rsplit(None, 1)[0]
+            steps.append({"label": "browser navigate", "tool": "browser_navigate", "args": {"url": url}})
             continue
         m = re.search(r"(?:google'?da|web'de|internette|internette)\s+(.+?)\s+(?:ara|araştır|arastir)$", c, re.I)
         if m:
