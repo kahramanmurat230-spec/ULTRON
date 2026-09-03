@@ -32,10 +32,12 @@ def _looks_like_work(text):
     # Leave known deterministic/single-turn intents to Agent.handle.
     if any(k in t for k in ("ekranımı analiz", "ekranimi analiz", "ekranı analiz", "ekrani analiz")):
         return False
+    markers = ("önce", "once", "sonra", "ardından", "ardindan", "daha sonra", "sonucunu", "sonucunu söyle", "sonucunu soyle")
+    if any(k in t for k in markers):
+        return True
     if any(k in t for k in ("hesapla", "hava durumu", "hava nasıl", "hava nasil")) and _action_score(t) < 2:
         return False
-    markers = ("önce", "once", "sonra", "ardından", "ardindan", "daha sonra", "sonucunu", "sonucunu söyle", "sonucunu soyle")
-    return any(k in t for k in markers) or _action_score(t) >= 2
+    return _action_score(t) >= 2
 
 
 def _deterministic_plan(text):
