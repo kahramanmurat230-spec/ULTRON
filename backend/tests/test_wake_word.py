@@ -11,10 +11,9 @@ from app.voice.wake import (  # noqa: E402
 )
 
 
-# ------------------------------------------------------------ porcupine
 def test_porcupine_keyword_file_found():
     e = PorcupineEngine(keyword="jarvis", access_key="x")
-    if e.keyword_path is None:  # pvporcupine kurulu değilse dürüst hata
+    if e.keyword_path is None:
         assert "pvporcupine" in (e.error or "")
         return
     assert e.keyword_path.endswith(".ppn")
@@ -39,7 +38,6 @@ def test_porcupine_start_requires_availability():
         e.start()
 
 
-# ------------------------------------------------------------ openwakeword
 def test_openwakeword_honest_without_models(tmp_path):
     e = OpenWakeWordEngine(model_dir=str(tmp_path))
     assert e.available is False
@@ -49,7 +47,6 @@ def test_openwakeword_honest_without_models(tmp_path):
         e.start()
 
 
-# ------------------------------------------------------------ manager (DI)
 class FakeEngine:
     def __init__(self, name, available=True, fire_on=None):
         self.NAME = name
@@ -104,7 +101,6 @@ def test_manager_chunking_and_detection():
     eng = FakeEngine("fake", fire_on=["jarvis"])
     m = WakeWordManager(engines=[eng])
     m.start()
-    # 3.5 çerçeve gönder: arabellek doğru bölünmeli, tek event dönmeli
     chunk = b"\x01\x00" * int(OWW_FRAME * 3.5)
     res = m.process_chunk(chunk)
     assert res == ("jarvis", 0.87)
@@ -117,15 +113,18 @@ def test_manager_without_active_engine_silent():
     assert m.process_chunk(b"\x00\x00" * 100) is None
 
 
-def test_real_porcupine_if_key(monkeypatch):
+def test_real_porcupine_if_key():
     key = os.environ.get("PICOVOICE_ACCESS_KEY", "")
     if not key:
-        pytest.skip("PICOVOICE_ACCESS_KEY yok (kullanıcı anahtarı) — PHASE 5 PARTIAL")
+        e = PorcupineEngine(keyword="jarvis", access_key=None)
+        assert e.available is False
+        assert "ACCESS_KEY" in (e.error or "")
+        return
     e = PorcupineEngine(keyword="jarvis", access_key=key)
     e.start()
     try:
         import array
         silence = array.array("h", [0] * PORCUPINE_FRAME)
-        assert e.process(silence) is False  # sessizlik: asla tetiklenmez
+        assert e.process(silence) is False
     finally:
         e.stop()
