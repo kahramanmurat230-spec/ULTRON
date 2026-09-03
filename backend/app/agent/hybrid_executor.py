@@ -1,10 +1,12 @@
 """Safe execution layer for validated local-LLM plans."""
+import re
 import time
 
 
 class HybridPlanExecutor:
     MAX_STEPS = 12
     MAX_RETRIES = 1
+    _CONTEXT_RE = re.compile(r"\{\{step\.(\d+)\.([A-Za-z_][A-Za-z0-9_]*)\}\}")
 
     def __init__(self, executor, registry, planner=None):
         self.executor = executor
@@ -15,17 +17,32 @@ class HybridPlanExecutor:
     def _resolve(value, results):
         if not isinstance(value, str):
             return value
-        prefix = "{{step."
-        if not value.startswith(prefix) or not value.endswith("}}"):
-            return value
-        try:
-            index, field = value[len(prefix):-2].split(".", 1)
-            item = results[int(index)]
+        match = HybridPlanExecutor._CONTEXT_RE.fullmatch(value)
+        if match:
+            index, field = int(match.group(1)), match.group(2)
+            try:
+                item = results[index]
+            except IndexError as exc:
+                raise ValueError(f"Geçersiz step context: {value}") from exc
             if field == "result":
                 return item.get("result")
-            return item.get(field)
-        except (ValueError, IndexError, KeyError):
+            if field in item:
+                return item.get(field)
             raise ValueError(f"Geçersiz step context: {value}")
+
+        if "{{step." not in value:
+            return value
+
+        def replace(match):
+            resolved = HybridPlanExecutor._resolve(match.group(0), results)
+            if resolved is None:
+                return ""
+            if isinstance(resolved, (dict, list)):
+                import json
+                return json.dumps(resolved, ensure_ascii=False, default=str)
+            return str(resolved)
+
+        return HybridPlanExecutor._CONTEXT_RE.sub(replace, value)
 
     @classmethod
     def _resolve_args(cls, args, results):
