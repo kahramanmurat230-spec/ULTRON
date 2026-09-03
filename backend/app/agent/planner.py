@@ -91,3 +91,8 @@ class Planner:
              {"role": "user", "content": goal}], tools=None)
         content = (r.get("message", {}).get("content") or "").strip()
         return self.validate_plan(self._extract_json(content), goal=goal)
+
+
+# Activate the integration after Agent has already been imported by runtime.
+from app.agent.hybrid_integration import _install as _install_hybrid_agent
+_install_hybrid_agent()
