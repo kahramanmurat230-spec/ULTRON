@@ -63,6 +63,7 @@ def make_agent(planner):
     agent.memory = FakeMemory()
     agent.audit = FakeAudit()
     agent.redact_fn = None
+    agent.adaptive = None
     agent.hybrid_executor = None
     return agent
 
