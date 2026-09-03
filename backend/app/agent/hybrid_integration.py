@@ -20,7 +20,7 @@ def _action_score(text):
         "kontrol et", "kontrol", "bul", "listele", "say", "aç", "ac ",
         "kapat", "oku", "yaz", "oluştur", "olustur", "sil", "taşı", "tasi",
         "kopyala", "yeniden adlandır", "ara", "araştır", "arastir", "göster",
-        "goster", "doğrula", "dogrula", "çalıştır", "calistir", "oluştur",
+        "goster", "doğrula", "dogrula", "çalıştır", "calistir", "hesapla",
     )
     return sum(1 for v in verbs if v in t)
 
@@ -131,5 +131,5 @@ def _install():
     _INSTALLED = True
 
 
-# planner.py is imported after Agent by the runtime, so installation is safe here.
+# planner.py is imported after Agent by runtime, so installation is safe here.
 _install()
