@@ -55,11 +55,6 @@ class FakeAudit:
         self.rows.append((event, text))
 
 
-class FakePlannerDeterministic:
-    def make_plan(self, goal):
-        pytest.fail("LLM planner should not run when deterministic planner produces a plan")
-
-
 def make_agent(planner):
     agent = object.__new__(Agent)
     agent.planner = planner
@@ -67,6 +62,7 @@ def make_agent(planner):
     agent.registry = FakeRegistry()
     agent.memory = FakeMemory()
     agent.audit = FakeAudit()
+    agent.redact_fn = None
     agent.hybrid_executor = None
     return agent
 
@@ -88,11 +84,7 @@ def test_hybrid_handle_executes_llm_plan_and_context(monkeypatch):
     assert agent.audit.rows[-1][0] == "HYBRID_PLAN"
 
 
-def test_deterministic_plan_is_selected_before_llm(monkeypatch):
-    class DeterministicPlanner:
-        def make_plan(self, goal):
-            pytest.fail("LLM fallback must not run")
-
+def test_deterministic_plan_is_selected_before_llm():
     plan = _deterministic_plan("önce sistem durumunu kontrol et, sonra Downloads klasörünü listele")
     if plan is None:
         pytest.skip("Deterministic parser did not recognize this request")
