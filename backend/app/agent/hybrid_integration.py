@@ -1,17 +1,14 @@
-"""Connect the bounded hybrid planner/executor to the live V16 Agent path.
+"""Live integration for the bounded local hybrid planner/executor.
 
-The integration keeps deterministic multi-step parsing first. Only requests that
-look like actionable multi-step work and are not understood by the deterministic
-planner are sent to the local LLM planner. Tool execution remains behind the
-validated HybridPlanExecutor safety boundary.
+This module deliberately does not monkeypatch Agent. Agent.handle calls
+``try_hybrid_handle`` at a controlled point in its normal pipeline.
+Deterministic multi-step parsing remains first; the local LLM planner is used
+only when the deterministic planner cannot build a plan.
 """
 import json
 import re
 
 from app.agent.hybrid_executor import HybridPlanExecutor
-
-
-_INSTALLED = False
 
 
 def _action_score(text):
@@ -29,7 +26,6 @@ def _looks_like_work(text):
     t = (text or "").strip().lower()
     if not t:
         return False
-    # Leave known deterministic/single-turn intents to Agent.handle.
     if any(k in t for k in ("ekranımı analiz", "ekranimi analiz", "ekranı analiz", "ekrani analiz")):
         return False
     markers = ("önce", "once", "sonra", "ardından", "ardindan", "daha sonra", "sonucunu", "sonucunu söyle", "sonucunu soyle")
@@ -80,58 +76,68 @@ def _format_result(result):
     return "Görev tamamlandı.\n" + "\n".join(parts)
 
 
-def _install():
-    global _INSTALLED
-    if _INSTALLED:
-        return
-    from app.agent.agent import Agent
-    if getattr(Agent, "_hybrid_planner_connected", False):
-        _INSTALLED = True
-        return
-
-    original_init = Agent.__init__
-    original_handle = Agent.handle
-
-    def hybrid_init(self, *args, **kwargs):
-        original_init(self, *args, **kwargs)
-        self.hybrid_executor = HybridPlanExecutor(self.executor, self.registry, self.planner)
-
-    def hybrid_handle(self, text, approved=False):
-        if self.planner is None or not _looks_like_work(text):
-            return original_handle(self, text, approved=approved)
-
-        plan = _deterministic_plan(text)
-        planner_name = "deterministic-first"
-        if plan is None:
-            try:
-                plan = self.planner.make_plan(text)
-                planner_name = "local-hybrid"
-            except Exception:
-                # No tool execution happened, so normal conversational fallback
-                # is still safe when the LLM cannot produce a valid plan.
-                return original_handle(self, text, approved=approved)
-
-        result = self.hybrid_executor.execute(plan, approved=approved)
-        status = result.get("status")
-        if status == "WAITING_APPROVAL":
-            answer = "Onay gerekiyor: plan içinde onay gerektiren bir işlem var."
-        elif not result.get("ok"):
-            answer = f"Görev tamamlanamadı ({status or 'FAILED'})."
-            failed = next((s for s in result.get("steps", []) if not s.get("ok")), None)
-            if failed:
-                answer += f" Adım {failed.get('index', 0) + 1}: {failed.get('error', 'bilinmeyen hata')}"
-        else:
-            answer = _format_result(result)
-        answer = self._boss_hitap(answer)
-        self._save("ULTRON", answer)
-        self.audit.write("HYBRID_PLAN", f"planner={planner_name} status={status} steps={len(result.get('steps', []))}")
-        return answer
-
-    Agent.__init__ = hybrid_init
-    Agent.handle = hybrid_handle
-    Agent._hybrid_planner_connected = True
-    _INSTALLED = True
+def _validate_plan(planner, plan):
+    """Use Planner validation when available; reject malformed plans otherwise."""
+    if not isinstance(plan, dict):
+        return None
+    validator = getattr(planner, "validate_plan", None)
+    if callable(validator):
+        try:
+            return validator(plan)
+        except Exception:
+            return None
+    steps = plan.get("steps") or []
+    if not steps or len(steps) > HybridPlanExecutor.MAX_STEPS:
+        return None
+    for i, step in enumerate(steps):
+        if not isinstance(step, dict) or not isinstance(step.get("tool"), str):
+            return None
+        if not isinstance(step.get("arguments", {}), dict):
+            return None
+        deps = step.get("depends_on", [])
+        if not isinstance(deps, list) or any(not isinstance(d, int) or d >= i or d < 0 for d in deps):
+            return None
+    return plan
 
 
-# planner.py is imported after Agent by runtime, so installation is safe here.
-_install()
+def try_hybrid_handle(agent, text, approved=False):
+    """Return an answer when hybrid execution owns the request, else None."""
+    planner = getattr(agent, "planner", None)
+    if planner is None or not _looks_like_work(text):
+        return None
+
+    plan = _deterministic_plan(text)
+    planner_name = "deterministic-first"
+    if plan is None:
+        try:
+            plan = planner.make_plan(text)
+            planner_name = "local-hybrid"
+        except Exception:
+            return None
+
+    plan = _validate_plan(planner, plan)
+    if plan is None:
+        agent.audit.write("HYBRID_PLAN", f"planner={planner_name} status=INVALID_PLAN")
+        return None
+
+    executor = getattr(agent, "hybrid_executor", None)
+    if executor is None:
+        executor = HybridPlanExecutor(agent.executor, agent.registry, planner)
+        agent.hybrid_executor = executor
+
+    result = executor.execute(plan, approved=approved, deadline_s=60.0)
+    status = result.get("status")
+    if status == "WAITING_APPROVAL":
+        answer = "Onay gerekiyor: plan içinde onay gerektiren bir işlem var."
+    elif not result.get("ok"):
+        answer = f"Görev tamamlanamadı ({status or 'FAILED'})."
+        failed = next((s for s in result.get("steps", []) if not s.get("ok")), None)
+        if failed:
+            answer += f" Adım {failed.get('index', 0) + 1}: {failed.get('error', 'bilinmeyen hata')}"
+    else:
+        answer = _format_result(result)
+
+    answer = agent._boss_hitap(answer)
+    agent._save("ULTRON", answer)
+    agent.audit.write("HYBRID_PLAN", f"planner={planner_name} status={status} steps={len(result.get('steps', []))}")
+    return answer
