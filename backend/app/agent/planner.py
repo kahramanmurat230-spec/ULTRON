@@ -93,6 +93,8 @@ class Planner:
         return self.validate_plan(self._extract_json(content), goal=goal)
 
 
-# Activate the integration after Agent has already been imported by runtime.
+# Activate integrations after Agent has already been imported by runtime.
 from app.agent.hybrid_integration import _install as _install_hybrid_agent
 _install_hybrid_agent()
+from app.agent.gui_integration import _install as _install_gui_agent
+_install_gui_agent()
