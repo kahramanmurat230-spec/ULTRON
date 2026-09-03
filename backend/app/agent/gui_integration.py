@@ -1,5 +1,8 @@
 """Live GUI Agent integration with approval-gated screen actions."""
-from app.agent.gui_agent import GUIAgent
+import re
+
+from app.agent.gui_agent import GUIAction, GUIAgent
+from app.automation.gui import GUIAutomation
 
 
 def try_gui_handle(agent, text, approved=False):
@@ -8,15 +11,12 @@ def try_gui_handle(agent, text, approved=False):
         return None
     if not any(k in t for k in ("tıkla", "tikla", "yaz", "bas")):
         return None
-    automation = getattr(agent, "gui", None)
-    if automation is None:
-        return None
-    import re
     m = re.search(r"['\"]([^'\"]+)['\"]", text or "")
     if not m or not any(k in t for k in ("tıkla", "tikla")):
         return None
+    automation = getattr(agent, "gui", None) or GUIAutomation()
     result = GUIAgent(automation).execute(
-        [{"kind": "click_text", "params": {"text": m.group(1)}}], approved=approved)
+        [GUIAction("click_text", params={"text": m.group(1)})], approved=approved)
     if result.get("status") == "WAITING_APPROVAL":
         return "Onay gerekiyor: ekrandaki hedefe tıklama işlemi bekliyor."
     if not result.get("ok"):
