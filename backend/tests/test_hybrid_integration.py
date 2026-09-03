@@ -98,3 +98,6 @@ def test_work_detection_is_bounded():
     assert _looks_like_work("dosyaları bul ve oku")
     assert not _looks_like_work("merhaba nasılsın")
     assert not _looks_like_work("ekranımı analiz et")
+
+
+# Latest wiring must be exercised by the normal backend CI workflow.
