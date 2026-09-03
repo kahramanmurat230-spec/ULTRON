@@ -1,0 +1,43 @@
+"""Live GUI Agent integration with approval-gated screen actions."""
+from app.agent.gui_agent import GUIAgent
+
+
+def try_gui_handle(agent, text, approved=False):
+    t = (text or "").strip().lower()
+    if not any(k in t for k in ("ekranda", "ekranımda", "ekranimi", "butona", "butonuna")):
+        return None
+    if not any(k in t for k in ("tıkla", "tikla", "yaz", "bas")):
+        return None
+    automation = getattr(agent, "gui", None)
+    if automation is None:
+        return None
+    import re
+    m = re.search(r"['\"]([^'\"]+)['\"]", text or "")
+    if not m or not any(k in t for k in ("tıkla", "tikla")):
+        return None
+    result = GUIAgent(automation).execute(
+        [{"kind": "click_text", "params": {"text": m.group(1)}}], approved=approved)
+    if result.get("status") == "WAITING_APPROVAL":
+        return "Onay gerekiyor: ekrandaki hedefe tıklama işlemi bekliyor."
+    if not result.get("ok"):
+        return f"GUI işlemi başarısız: {result.get('results', [{}])[-1].get('error', 'bilinmeyen hata')}"
+    return f"Ekrandaki '{m.group(1)}' hedefi işlendi ve doğrulama uygulandı."
+
+
+def _install():
+    from app.agent.agent import Agent
+    if getattr(Agent, "_gui_agent_connected", False):
+        return
+    original = Agent.handle
+    def wrapped(self, text, approved=False):
+        try:
+            answer = try_gui_handle(self, text, approved=approved)
+        except Exception as exc:
+            try: self.audit.write("GUI_AGENT", f"status=ERROR error={exc}")
+            except Exception: pass
+            answer = None
+        return answer if answer is not None else original(self, text, approved=approved)
+    Agent.handle = wrapped
+    Agent._gui_agent_connected = True
+
+_install()
