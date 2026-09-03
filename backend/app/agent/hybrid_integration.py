@@ -1,9 +1,8 @@
 """Live integration for the bounded local hybrid planner/executor.
 
-This module deliberately does not monkeypatch Agent. Agent.handle calls
-``try_hybrid_handle`` at a controlled point in its normal pipeline.
-Deterministic multi-step parsing remains first; the local LLM planner is used
-only when the deterministic planner cannot build a plan.
+The connection is installed once at import time so the existing Agent API stays
+compatible. Deterministic multi-step parsing remains first; the local LLM planner
+is used only when the deterministic planner cannot build a plan.
 """
 import json
 import re
@@ -141,3 +140,26 @@ def try_hybrid_handle(agent, text, approved=False):
     agent._save("ULTRON", answer)
     agent.audit.write("HYBRID_PLAN", f"planner={planner_name} status={status} steps={len(result.get('steps', []))}")
     return answer
+
+
+def _install():
+    from app.agent.agent import Agent
+    if getattr(Agent, "_hybrid_planner_connected", False):
+        return
+    original_handle = Agent.handle
+
+    def hybrid_handle(self, text, approved=False):
+        try:
+            answer = try_hybrid_handle(self, text, approved=approved)
+        except Exception as exc:
+            self.audit.write("HYBRID_PLAN", f"status=INTEGRATION_ERROR error={exc}")
+            answer = None
+        if answer is not None:
+            return answer
+        return original_handle(self, text, approved=approved)
+
+    Agent.handle = hybrid_handle
+    Agent._hybrid_planner_connected = True
+
+
+_install()
