@@ -18,9 +18,11 @@ class MemoryPlanningContext:
     MAX_ITEM_CHARS = 500
     _SENSITIVE_KIND = re.compile(r"^(?:SECRET|CREDENTIAL|TOKEN|PASSWORD|API[_ -]?KEY|AUTH)$", re.I)
     _SECRET_VALUE = re.compile(
-        r"(?i)\b(?:password|passwd|token|secret|api[_ -]?key|authorization|bearer)\s*[:=]\s*[^\s,;]+"
+        r"(?i)(?:\b(?:password|passwd|token|secret|api[_ -]?key|authorization)\s*[:=]\s*|\bbearer\s+)[^\s,;]+"
     )
-    _COMMON_TOKEN = re.compile(r"\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}|AIza[A-Za-z0-9_-]{20,})\b")
+    _COMMON_TOKEN = re.compile(
+        r"\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}|AIza[A-Za-z0-9_-]{20,})\b"
+    )
 
     def __init__(self, semantic_memory=None):
         self.semantic_memory = semantic_memory
@@ -30,7 +32,7 @@ class MemoryPlanningContext:
         if cls._SENSITIVE_KIND.fullmatch(str(kind or "")):
             return "[REDACTED MEMORY]"
         text = " ".join(str(content).split())
-        text = cls._SECRET_VALUE.sub(lambda m: m.group(0).split("=", 1)[0].split(":", 1)[0] + "=[REDACTED]", text)
+        text = cls._SECRET_VALUE.sub("[REDACTED]", text)
         text = cls._COMMON_TOKEN.sub("[REDACTED]", text)
         return text[: cls.MAX_ITEM_CHARS]
 
