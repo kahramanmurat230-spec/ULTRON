@@ -1,13 +1,13 @@
 /**
- * ULTRON client TTS — NEURAL STREAM ONLY (V12.5).
+ * ULTRON client TTS — local backend stream.
  *
- * speak(text) → POST /api/tts/speak (edge-tts · tr-TR-AhmetNeural · mp3)
+ * speak(text) → POST /api/tts/speak (local Piper WAV / local eSpeak WAV)
  *             → AudioContext.decodeAudioData → speakers
  *             → REAL amplitude (AnalyserNode RMS) → ttsLevel
  *             → HoloHead jaw/eye lip-sync + waveform reactivity.
  *
- * Neural-only playback. If the neural backend is unavailable, ULTRON stays silent
- * rather than falling back to robotic synthesis.
+ * Local-only playback. If the local backend is unavailable, ULTRON stays silent
+ * rather than falling back to cloud or browser synthesis.
  *
  * window.speechSynthesis is PERMANENTLY DISABLED — zero calls in this file.
  */
@@ -62,7 +62,7 @@ function levelLoop(): void {
   requestAnimationFrame(tick);
 }
 
-/** Decode & play any neural audio (mp3/wav) through the analyser chain. */
+/** Decode & play local audio through the analyser chain. */
 async function playBytes(bytes: ArrayBuffer): Promise<boolean> {
   if (!ctx || !analyser) return false;
   try {
@@ -90,7 +90,6 @@ async function playBytes(bytes: ArrayBuffer): Promise<boolean> {
   }
 }
 
-/** Neural-only policy: never fall back to eSpeak/SAPI. */
 function b64ToBytes(b64: string): ArrayBuffer {
   const bin = atob(b64);
   const arr = new Uint8Array(bin.length);
@@ -98,11 +97,10 @@ function b64ToBytes(b64: string): ArrayBuffer {
   return arr.buffer as ArrayBuffer;
 }
 
-/** Neural voice only. Backend unreachable + no local WASM => silence (never SAPI5). */
+/** Local TTS only. Cloud/browser synthesis is never used. */
 export async function speak(text: string): Promise<void> {
   if (!getState().ttsEnabled) return;
   unlock();
-  // 1) NEURAL STREAM: edge-tts mp3 from the brain, straight to speakers
   try {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 15000);
@@ -118,9 +116,8 @@ export async function speak(text: string): Promise<void> {
       if (d.audio_b64 && (await playBytes(b64ToBytes(d.audio_b64)))) return;
     }
   } catch {
-    /* brain offline → local fallback */
+    /* local backend unavailable → silence */
   }
-  // Neural-only: do not fall back to eSpeak or browser speech synthesis.
   setState({ ttsSpeaking: false });
 }
 
