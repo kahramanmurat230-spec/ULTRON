@@ -18,7 +18,7 @@ class OutcomePlanningContext:
     _SECRET = re.compile(r"(?i)(?:\b(?:password|passwd|token|secret|api[_ -]?key|authorization)\s*[:=]\s*|\bbearer\s+)[^\s,;]+")
     _TOKEN = re.compile(r"\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}|AIza[A-Za-z0-9_-]{20,})\b")
     _CONTROL = re.compile(r"(?i)^\s*(?:system|assistant|developer)\s*:\s*|\b(?:ignore|override|bypass)\s+(?:previous|prior|all)\s+(?:instructions?|rules?|safety)\b")
-    _TASK = re.compile(r"(?:^|;)\s*task=([^;]+)")
+    _TASK = re.compile(r"(?:^|(?:verified outcome\s+)|;)\s*task=([^;]+)", re.I)
     _GOAL = re.compile(r"(?:^|;)\s*goal=([^;]+)")
     _RESULT = re.compile(r"(?:^|;)\s*result=(.*?)(?:;\s*(?:attempts|replans)=|$)")
     _ATTEMPTS = re.compile(r"(?:^|;)\s*attempts=(\d+)")
@@ -81,7 +81,7 @@ class OutcomePlanningContext:
         """Return a bounded ranking score; never an authorization decision."""
         score = 50
         if duplicate_count > 1:
-            score += min(20, (duplicate_count - 1) * 10)
+            score += min(20, (duplicate_count - 1) * 20)
         attempts = cls._ATTEMPTS.search(raw)
         replans = cls._REPLANS.search(raw)
         if attempts:
