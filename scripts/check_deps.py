@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """ULTRON kurulum doğrulayıcı — gerçek kontroller, dürüst sonuç.
 
-Kontrol: Python/Node/npm sürümleri, Python paketleri, tesseract, Ollama
-erişimi + modeller, ports (8000/5173), frontend build varlığı.
+Kontrol: Python/Node/npm sürümleri, Python paketleri, yerel TTS, tesseract,
+Ollama erişimi + modeller, ports (8000/5173), frontend build varlığı.
 Çıkış: 0 = hazır, 1 = eksik var (rapor stdout).
 """
 import json
@@ -24,7 +24,6 @@ REQUIRED_PY = [
     ("numpy", "semantic memory TF-IDF"),
 ]
 OPTIONAL_PY = [
-    ("edge_tts", "neural TTS (cloud)"),
     ("pytesseract", "OCR (tesseract binary de gerekir)"),
     ("pyautogui", "computer use"),
     ("playwright", "browser agent"),
@@ -32,7 +31,6 @@ OPTIONAL_PY = [
     ("faster_whisper", "STT"),
     ("sounddevice", "mikrofon/hoparlör I/O"),
 ]
-
 
 FAILURES = []
 
@@ -54,6 +52,21 @@ def port_free(port):
         return False
     finally:
         s.close()
+
+
+def local_tts_status():
+    """Check the same local TTS backends used by app/voice/tts.py."""
+    piper = shutil.which(os.environ.get("ULTRON_PIPER_EXECUTABLE", "piper"))
+    model = Path(os.environ.get(
+        "ULTRON_PIPER_MODEL",
+        str(BACKEND / "data" / "voice" / "piper" / "tr_TR-ahmet-medium.onnx"),
+    )).expanduser()
+    espeak = shutil.which(os.environ.get("ULTRON_ESPEAK_EXECUTABLE", "espeak-ng"))
+    if piper and model.is_file():
+        return True, f"piper-local + model: {model}"
+    if espeak:
+        return True, "espeak-ng-local"
+    return False, "Piper executable+model veya espeak-ng bulunamadı"
 
 
 def main():
@@ -85,6 +98,9 @@ def main():
             check(f"python (opsiyonel): {mod}", True, why, required=False)
         except ImportError:
             check(f"python (opsiyonel): {mod}", False, why, required=False)
+
+    tts_ok, tts_detail = local_tts_status()
+    check("Local TTS", tts_ok, tts_detail, required=False)
 
     tess = shutil.which("tesseract")
     check("tesseract binary (OCR)", bool(tess),
