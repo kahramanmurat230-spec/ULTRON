@@ -1,27 +1,16 @@
 """Startup health check — module status report (no fakes)."""
 import sqlite3
-import sys
 import time
 from pathlib import Path
 
 
 def tts_backend_name() -> str | None:
+    """Report the same real local TTS backend used by runtime."""
     try:
-        import edge_tts  # noqa: F401
-        return "edge-tts-neural"
+        from app.voice.tts import TextToSpeech
+        return TextToSpeech().backend()
     except Exception:
-        pass
-    try:
-        import kokoro  # noqa: F401
-        return "kokoro"
-    except Exception:
-        pass
-    try:
-        import pykokoro  # noqa: F401
-        return "pykokoro"
-    except Exception:
-        pass
-    return None  # No robotic SAPI fallback
+        return None
 
 
 def sqlite_ok(paths) -> bool:

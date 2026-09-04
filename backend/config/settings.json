@@ -50,13 +50,8 @@
       "close_application"
     ],
     "filesystem": {
-      "allowed_read_roots": [
-        "..",
-        "~"
-      ],
-      "allowed_write_roots": [
-        ".."
-      ],
+      "allowed_read_roots": ["..", "~"],
+      "allowed_write_roots": [".."],
       "note": "relative paths resolve against backend/; ~ = home. UNC + system dirs always rejected."
     }
   },
@@ -71,47 +66,14 @@
   "voiceprint_threshold": 0.75,
   "sovereign_mode": false,
   "vision_enabled": false,
-  "vision_targets": [
-    "code",
-    "vscode",
-    "terminal",
-    "pycharm",
-    "chrome",
-    "powershell",
-    "cmd"
-  ],
-  "vision_blacklist": [
-    "password",
-    "banka",
-    "bank",
-    "login",
-    "private",
-    "şifre",
-    "cüzdan",
-    "wallet"
-  ],
-  "vision": {
-    "enabled": true,
-    "model": "llava:7b"
-  },
-  "code_agent": {
-    "enabled": true,
-    "project_root": ".",
-    "max_context_chars": 50000,
-    "require_approval_for_apply": true
-  },
-  "gui_automation": {
-    "enabled": true,
-    "require_confirmation": true
-  },
-  "browser": {
-    "headless": true,
-    "channel": "auto",
-    "timeout_seconds": 20,
-    "note": "auto: bundled chromium -> system chrome -> system edge. Kurulum: python -m playwright install chromium"
-  },
+  "vision_targets": ["code", "vscode", "terminal", "pycharm", "chrome", "powershell", "cmd"],
+  "vision_blacklist": ["password", "banka", "bank", "login", "private", "şifre", "cüzdan", "wallet"],
+  "vision": {"enabled": true, "model": "llava:7b"},
+  "code_agent": {"enabled": true, "project_root": ".", "max_context_chars": 50000, "require_approval_for_apply": true},
+  "gui_automation": {"enabled": true, "require_confirmation": true},
+  "browser": {"headless": true, "channel": "auto", "timeout_seconds": 20, "note": "auto: bundled chromium -> system chrome -> system edge. Kurulum: python -m playwright install chromium"},
   "wake": {
-    "keyword": "jarvis",
+    "keyword": "ultron",
     "threshold": 0.5,
     "note": "Gerçek audio-level wake-word. Porcupine: PICOVOICE_ACCESS_KEY env veya vault 'picovoice_access_key'; OpenWakeWord: data/voice/wake/*.tflite. Engine yoksa manuel tetikleme."
   }
