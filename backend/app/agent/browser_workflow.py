@@ -20,9 +20,25 @@ def parse_browser_plan(text: str) -> list[dict]:
     steps = []
     for c in clauses:
         low = c.lower()
-        m = re.search(r"(?:siteye|adrese|url'ye|url ye|sayfaya)\s+(https?://\S+|[\w.-]+\.[a-z]{2,}(?:/\S*)?)\s*(?:git|aç|ac)$", low, re.I)
+        # Accept both "siteye https://example.com aç" and the natural
+        # "https://example.com aç" form used by the browser workflow tests.
+        m = re.search(
+            r"(?:siteye|adrese|url'ye|url ye|sayfaya)\s+(https?://\S+|[\w.-]+\.[a-z]{2,}(?:/\S*)?)\s*(?:git|aç|ac)$",
+            low,
+            re.I,
+        )
         if not m:
-            m = re.search(r"^(?:git|aç|ac)\s+(https?://\S+|[\w.-]+\.[a-z]{2,}(?:/\S*)?)$", low, re.I)
+            m = re.search(
+                r"^(?:git|aç|ac)\s+(https?://\S+|[\w.-]+\.[a-z]{2,}(?:/\S*)?)$",
+                low,
+                re.I,
+            )
+        if not m:
+            m = re.search(
+                r"^(https?://\S+|[\w.-]+\.[a-z]{2,}(?:/\S*)?)\s*(?:git|aç|ac)$",
+                low,
+                re.I,
+            )
         if m:
             steps.append({"label": "browser navigate", "tool": "browser_navigate", "args": {"url": m.group(1)}})
             continue
