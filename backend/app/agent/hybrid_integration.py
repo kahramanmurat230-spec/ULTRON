@@ -12,12 +12,7 @@ from app.agent.hybrid_executor import HybridPlanExecutor
 
 def _action_score(text):
     t = (text or "").lower()
-    verbs = (
-        "kontrol et", "kontrol", "bul", "listele", "say", "aç", "ac ",
-        "kapat", "oku", "yaz", "oluştur", "olustur", "sil", "taşı", "tasi",
-        "kopyala", "yeniden adlandır", "ara", "araştır", "arastir", "göster",
-        "goster", "doğrula", "dogrula", "çalıştır", "calistir", "hesapla",
-    )
+    verbs = ("kontrol et", "kontrol", "bul", "listele", "say", "aç", "ac ", "kapat", "oku", "yaz", "oluştur", "olustur", "sil", "taşı", "tasi", "kopyala", "yeniden adlandır", "ara", "araştır", "arastir", "göster", "goster", "doğrula", "dogrula", "çalıştır", "calistir", "hesapla")
     return sum(1 for v in verbs if v in t)
 
 
@@ -47,13 +42,7 @@ def _deterministic_plan(text):
     for i, item in enumerate(raw):
         if not isinstance(item, dict) or not item.get("tool"):
             return None
-        steps.append({
-            "index": i,
-            "tool": item["tool"],
-            "arguments": item.get("args", item.get("arguments", {})) or {},
-            "reason": item.get("label", "deterministic step"),
-            "depends_on": [i - 1] if i else [],
-        })
+        steps.append({"index": i, "tool": item["tool"], "arguments": item.get("args", item.get("arguments", {})) or {}, "reason": item.get("label", "deterministic step"), "depends_on": [i - 1] if i else []})
     return {"goal": text, "steps": steps, "planner": "deterministic-first", "bounded": True}
 
 
@@ -62,10 +51,7 @@ def _format_result(result):
     for step in result.get("steps", []):
         if step.get("ok"):
             value = step.get("result")
-            if isinstance(value, str):
-                text = value
-            else:
-                text = json.dumps(value, ensure_ascii=False, default=str)
+            text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
             text = re.sub(r"\s+", " ", text).strip()
             if len(text) > 500:
                 text = text[:500] + "…"
@@ -104,6 +90,10 @@ def try_hybrid_handle(agent, text, approved=False):
     planner = getattr(agent, "planner", None)
     if planner is None or not _looks_like_work(text):
         return None
+    memory_context = getattr(planner, "memory_context", None)
+    semantic_memory = getattr(agent, "semantic_memory", None)
+    if memory_context is not None and semantic_memory is not None:
+        memory_context.semantic_memory = semantic_memory
 
     plan = _deterministic_plan(text)
     planner_name = "deterministic-first"
