@@ -233,3 +233,7 @@ class UltronRuntime:
             stack=getattr(self,'live_stack',None) or VoiceStackV2(); self.live_stack=stack; self.live_voice_v2=LiveVoiceV2(self.agent,self.tts,self.settings,stack)
             import threading; threading.Thread(target=self.live_voice_v2.run,daemon=True).start()
         except Exception:self.live_voice.start()
+    def stop_live_voice(self):
+        v2=getattr(self,'live_voice_v2',None)
+        if v2:v2.stop()
+        self.live_voice.stop()
