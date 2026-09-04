@@ -41,3 +41,32 @@ def test_memory_context_is_optional_and_bounded():
 
     bounded = MemoryPlanningContext(LongSemantic()).build("hesapla")
     assert len(bounded) <= MemoryPlanningContext.MAX_CHARS
+
+
+def test_memory_context_redacts_sensitive_kinds_and_values():
+    class SensitiveSemantic:
+        def search(self, goal, limit=5):
+            return [
+                (1.0, "TOKEN", "token=super-secret-value", 1),
+                (0.9, "FACT", "Bearer ghp_abcdefghijklmnopqrstuvwxyz123456", 2),
+                (0.8, "FACT", "normal project preference", 3),
+            ]
+
+    context = MemoryPlanningContext(SensitiveSemantic()).build("project")
+    assert "super-secret-value" not in context
+    assert "ghp_abcdefghijklmnopqrstuvwxyz123456" not in context
+    assert "normal project preference" in context
+
+
+def test_memory_context_deduplicates_and_ignores_malformed_hits():
+    class NoisySemantic:
+        def search(self, goal, limit=5):
+            return [
+                (1.0, "FACT", "Aynı kayıt", 1),
+                (0.9, "FACT", "Aynı kayıt", 2),
+                (0.8, "FACT"),
+                "bad-hit",
+            ]
+
+    context = MemoryPlanningContext(NoisySemantic()).build("kayıt")
+    assert context.count("Aynı kayıt") == 1
