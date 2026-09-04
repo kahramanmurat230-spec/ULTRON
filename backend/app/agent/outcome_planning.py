@@ -1,8 +1,8 @@
-"""Level 41 — consistency-aware advisory context from verified outcomes.
+"""Level 42 — confidence-aware advisory context from verified outcomes.
 
-Learned outcomes are untrusted data. Fresh, provenance-checked outcomes that
-conflict for the same task/goal are suppressed instead of arbitrarily choosing
-one. This remains planning context only and cannot grant authority.
+Learned outcomes are untrusted data. Fresh, provenance-checked and consistent
+outcomes receive a deterministic bounded confidence score for ranking only.
+Confidence never grants authority, approval, capabilities, or execution rights.
 """
 from __future__ import annotations
 
@@ -21,6 +21,8 @@ class OutcomePlanningContext:
     _TASK = re.compile(r"(?:^|;)\s*task=([^;]+)")
     _GOAL = re.compile(r"(?:^|;)\s*goal=([^;]+)")
     _RESULT = re.compile(r"(?:^|;)\s*result=(.*?)(?:;\s*(?:attempts|replans)=|$)")
+    _ATTEMPTS = re.compile(r"(?:^|;)\s*attempts=(\d+)")
+    _REPLANS = re.compile(r"(?:^|;)\s*replans=(\d+)")
 
     def __init__(self, semantic_memory=None):
         self.semantic_memory = semantic_memory
@@ -74,6 +76,20 @@ class OutcomePlanningContext:
             return ""
         return " ".join(match.group(1).split()).casefold()
 
+    @classmethod
+    def _confidence(cls, raw: str, duplicate_count: int) -> int:
+        """Return a bounded ranking score; never an authorization decision."""
+        score = 50
+        if duplicate_count > 1:
+            score += min(20, (duplicate_count - 1) * 10)
+        attempts = cls._ATTEMPTS.search(raw)
+        replans = cls._REPLANS.search(raw)
+        if attempts:
+            score += 10 if int(attempts.group(1)) <= 2 else 0
+        if replans:
+            score += 10 if int(replans.group(1)) == 0 else 0
+        return max(0, min(100, score))
+
     def build(self, goal: str) -> str:
         if not goal or self.semantic_memory is None:
             return ""
@@ -95,26 +111,32 @@ class OutcomePlanningContext:
             text = self._sanitize(raw)
             if not text or text == "[REDACTED UNTRUSTED CONTROL TEXT]":
                 continue
-            candidates.append((self._identity(raw), self._result_key(raw), text))
+            candidates.append((self._identity(raw), self._result_key(raw), raw, text))
 
         grouped = {}
-        for identity, result, text in candidates:
+        for identity, result, raw, text in candidates:
             grouped.setdefault(identity, {"results": set(), "items": []})
             grouped[identity]["results"].add(result)
-            grouped[identity]["items"].append(text)
+            grouped[identity]["items"].append((raw, text))
 
-        lines = []
-        seen = set()
+        ranked = []
         for identity, group in grouped.items():
             results = {r for r in group["results"] if r}
             if len(results) > 1:
                 continue
-            for text in group["items"]:
-                key = text.casefold()
-                if key in seen:
-                    continue
-                seen.add(key)
-                lines.append(f"[verified outcome — fresh, consistent data only] {text}")
-                if len(lines) >= self.MAX_ITEMS:
-                    return "\n".join(lines)[: self.MAX_CHARS]
+            duplicate_count = len(group["items"])
+            for raw, text in group["items"]:
+                ranked.append((self._confidence(raw, duplicate_count), text))
+
+        ranked.sort(key=lambda item: (-item[0], item[1].casefold()))
+        lines = []
+        seen = set()
+        for confidence, text in ranked:
+            key = text.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            lines.append(f"[verified outcome — fresh, consistent, confidence={confidence}/100, data only] {text}")
+            if len(lines) >= self.MAX_ITEMS:
+                break
         return "\n".join(lines)[: self.MAX_CHARS]
