@@ -1,15 +1,21 @@
-# ULTRON Neural Voice
+# ULTRON Local Voice
 
-ULTRON now uses Microsoft Edge Neural TTS with `tr-TR-AhmetNeural`.
+ULTRON TTS is fully local and does not use cloud synthesis or network fallbacks.
 
-- Rate: -6%
-- Pitch: -8Hz
-- Volume: +0%
-- Output: MP3 streamed through Web Audio
-- No SAPI5 fallback
-- No eSpeak fallback
-- 32-item in-memory phrase cache
-- 15s frontend request timeout
+## Engine order
 
-The Windows installer installs `edge-tts` and the V16 voice dependencies.
-Internet access is required for Edge Neural synthesis.
+1. **Piper local** — primary TTS engine, using a locally installed compatible model.
+2. **eSpeak-ng local** — optional local fallback when Piper is unavailable.
+3. **Unavailable** — if neither local engine is available; ULTRON reports the failure honestly.
+
+## Output
+
+- Local synthesis returns WAV audio.
+- Streaming TTS preserves the real audio format, including cached responses.
+- Text is normalized and bounded before synthesis.
+- In-memory cache is bounded to prevent unbounded growth.
+- Barge-in/cancellation stops further streaming work.
+
+## Privacy
+
+No Microsoft Edge Neural TTS or other cloud TTS provider is required. Network access is not used as a TTS fallback.
