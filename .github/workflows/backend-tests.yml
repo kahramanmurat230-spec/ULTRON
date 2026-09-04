@@ -37,4 +37,4 @@ jobs:
           p.write_text(s.replace(old, new), encoding='utf-8')
           PY
       - name: Run tests
-        run: pytest -q -s -k 'not neural_engine_real_status_honest'
+        run: pytest -q -s
