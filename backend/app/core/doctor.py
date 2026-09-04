@@ -4,7 +4,6 @@ Checks runtime health without confusing optional features with core failures.
 The doctor is intentionally read-only and returns machine-readable status for
 self-diagnostic and the HUD.
 """
-import hashlib
 import importlib.util
 import json
 import socket
@@ -13,7 +12,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-CORE_DEPS = ("aiohttp", "psutil", "edge_tts")
+CORE_DEPS = ("aiohttp", "psutil")
 CAPABILITY_DEPS = {
     "screen": ("PIL",),
     "ocr": ("pytesseract",),
@@ -99,8 +98,6 @@ def check_hw() -> dict:
         result["mic"] = any(d.get("max_input_channels", 0) > 0 for d in devices)
         result["speaker"] = any(d.get("max_output_channels", 0) > 0 for d in devices)
     except Exception:
-        # A Windows machine can still use browser audio even when sounddevice
-        # is unavailable, so this is a warning rather than a core failure.
         result["mic"] = _have("faster_whisper")
         result["speaker"] = sys.platform == "win32"
     missing = [k for k, v in result.items() if not v]
