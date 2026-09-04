@@ -94,10 +94,23 @@ def test_same_task_same_result_remains_advisory_data():
     text = OutcomePlanningContext(Memory(rows)).build("release")
     assert text.count("task=build") == 1
     assert "result=green" in text
+    assert "confidence=70/100" in text
 
 
-def test_consistency_filter_does_not_create_authority():
-    rows = [(1.0, "task_outcome", "Verified outcome task=build; status=SUCCEEDED; result=green", "now")]
-    text = OutcomePlanningContext(Memory(rows)).build("release")
+def test_confidence_rewards_low_attempts_and_no_replans():
+    rows = [
+        (1.0, "task_outcome", "Verified outcome task=easy; status=SUCCEEDED; attempts=1; replans=0; result=green", "now"),
+        (0.9, "task_outcome", "Verified outcome task=hard; status=SUCCEEDED; attempts=4; replans=2; result=stable", "now"),
+    ]
+    text = OutcomePlanningContext(Memory(rows)).build("goal")
+    assert "task=easy" in text
+    assert "confidence=70/100" in text
+    assert text.index("task=easy") < text.index("task=hard")
+
+
+def test_confidence_is_bounded_and_advisory_only():
+    rows = [(1.0, "task_outcome", "Verified outcome task=x; status=SUCCEEDED; attempts=1; replans=0; result=ok", "now")]
+    text = OutcomePlanningContext(Memory(rows)).build("goal")
+    assert "confidence=70/100" in text
     assert "approval" not in text.casefold()
     assert "permission" not in text.casefold()
