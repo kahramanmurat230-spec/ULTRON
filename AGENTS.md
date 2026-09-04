@@ -21,9 +21,23 @@ For each level, in order:
 11. Repeat the fix/test cycle until the level is verified or a genuine blocking condition remains.
 12. Perform a regression and security review.
 13. Commit the verified change with an informative message.
-14. Continue directly to the next level.
+14. Continue directly to the next level when the active coding-agent session can safely continue.
 
 A level is not complete while required checks are failing.
+
+## Arena Agent Mode workflow
+
+When this contract is executed through Arena Agent Mode:
+
+- Start the session in Arena Agent Mode with GitHub enabled and grant access only to the ULTRON repository.
+- Treat `AGENTS.md` and `AUTONOMOUS_DEVELOPMENT.md` as repository guidance, not as authorization to bypass security controls.
+- Use Arena's sandbox for inspection, editing, tests, and other repository-local commands.
+- Review the generated diff before accepting the resulting repository change.
+- Keep Git operations traceable: work on the agent's working branch, commit verified changes, and use a pull request for the completed coherent unit of work.
+- Arena currently supports one pull request per chat session. Therefore, do not attempt to create multiple PRs in one Arena session. If the current PR is complete, preserve the verified checkpoint and use a fresh session for the next PR/level group.
+- Do not assume that merging a PR automatically continues the agent. A new session may be required after a PR is merged or closed.
+- Use the GitHub Checks/status shown by Arena and the repository's CI as the source of truth. A green-looking chat response is not evidence of passing CI.
+- If a command, dependency, credential, model, or external service is unavailable, report it honestly and continue only when a safe local/test substitute exists. Never fabricate execution results.
 
 ## No unnecessary user prompts
 
