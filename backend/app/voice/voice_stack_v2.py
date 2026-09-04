@@ -1,20 +1,24 @@
-"""Voice Stack V2 — real-time voice with VAD, barge-in and latency metrics.
+"""Voice Stack V2 — real-time voice with VAD, wake-word gating, barge-in and metrics."""
+from __future__ import annotations
 
-Backend order: webrtcvad -> silero -> EnergyVAD (pure-python, no deps).
-The fixed 8-second window of LiveVoice is replaced by stream+VAD when this
-stack is used: speech end auto-triggers STT.  Barge-in: if VAD fires while
-`tts_active`, the interrupt callback cancels TTS and we switch to listening.
-Latency tracker records stt_ms / llm_ms / tts_ms per request.
-"""
 import array
 import math
-import time
 import threading
+import time
+from enum import Enum
+
+
+class VoiceState(str, Enum):
+    DISARMED = "DISARMED"
+    ARMED = "ARMED"
+    LISTENING = "LISTENING"
+    PROCESSING = "PROCESSING"
+    SPEAKING = "SPEAKING"
+    ERROR = "ERROR"
 
 
 class EnergyVAD:
     """RMS-energy VAD with hangover hysteresis. Frame = 30 ms int16 mono."""
-
     def __init__(self, threshold: float = 0.02, hangover_frames: int = 12,
                  sample_rate: int = 16000, frame_ms: int = 30):
         self.threshold = threshold
@@ -29,10 +33,7 @@ class EnergyVAD:
             return 0.0
         samples = array.array("h")
         samples.frombytes(frame[: n * 2])
-        acc = 0
-        for s in samples:
-            v = s / 32768.0
-            acc += v * v
+        acc = sum((s / 32768.0) ** 2 for s in samples)
         return math.sqrt(acc / n)
 
     def process_frame(self, frame: bytes) -> bool:
@@ -48,7 +49,6 @@ class EnergyVAD:
 
 
 class _HysteresisVAD:
-    """Normalize all VAD backends to the same start/end behavior."""
     def __init__(self, raw, start_frames=1, end_frames=10):
         self.raw = raw
         self.start_frames = start_frames
@@ -138,7 +138,6 @@ class VoiceStackV2:
         self.metrics = {"stt_ms": None, "llm_ms": None, "tts_ms": None, "vad": self.vad_kind}
         self._marks: dict = {}
 
-    # ------------------------------------------------------------- streaming
     def tts_start(self) -> None:
         self.tts_active = True
 
@@ -170,7 +169,6 @@ class VoiceStackV2:
             self.on_event(ev)
         return ev
 
-    # ------------------------------------------------------------- latency
     def mark(self, stage: str) -> None:
         now = time.time()
         if stage not in self._marks:
@@ -183,7 +181,6 @@ class VoiceStackV2:
         return dict(self.metrics)
 
     def commit(self) -> None:
-        """Persist latency metrics (auto-insert per voice interaction)."""
         m = self.metrics
         if self.store and any(m.get(k) is not None for k in ("stt_ms", "llm_ms", "tts_ms")):
             try:
@@ -198,27 +195,80 @@ class VoiceStackV2:
 
 
 class LiveVoiceV2:
-    """Stream-based live voice (replaces the fixed 8s window when deps exist)."""
-
+    """Real wake-word gated streaming voice. No transcript wake-word fallback."""
     def __init__(self, agent, tts, settings, stack: VoiceStackV2):
         self.agent = agent
         self.tts = tts
         self.settings = settings
         self.stack = stack
         self.running = False
+        self.state = VoiceState.DISARMED
+        self.last_error = None
         self.sr = int(settings.get("voice", {}).get("sample_rate", 16000))
-        self.wake = settings.get("wake_word", "ultron").lower()
+        wake_cfg = settings.get("wake", {})
+        self.wake = str(wake_cfg.get("keyword", settings.get("wake_word", "ultron"))).lower()
         self._whisper_model = None
-        # PHASE 5: GERÇEK wake-word (audio-level spotting) — engine yoksa
-        # eski transcript-substring yedek davranışı dürüst şekilde sürer,
-        # ama bu artık "wake-word" olarak RAPORLANMAZ (bkz. wake.status).
         self.wake_manager = None
+        self._utterance_lock = threading.Lock()
+        self._barge_in_pending = False
         try:
             from app.voice.wake import WakeWordManager
             self.wake_manager = WakeWordManager(settings)
-            self.wake_manager.start()
-        except Exception:
-            self.wake_manager = None
+        except Exception as exc:
+            self.last_error = str(exc)[:300]
+        if getattr(self.tts, "stop", None) or getattr(self.tts, "cancel", None):
+            self.stack.on_interrupt = self._interrupt_tts
+
+    @property
+    def available(self) -> bool:
+        return self.wake_manager is not None and self.wake_manager.active is not None
+
+    def status(self) -> dict:
+        return {
+            "state": self.state.value,
+            "available": self.available,
+            "wake": self.wake_manager.status() if self.wake_manager else None,
+            "last_error": self.last_error,
+            "vad": self.stack.vad_kind,
+        }
+
+    def _set_state(self, state: VoiceState, error=None):
+        self.state = state
+        self.last_error = error
+        if self.stack.on_event:
+            self.stack.on_event({"type": "voice_state", "state": state.value, "error": error, "ts": time.time()})
+
+    def _interrupt_tts(self):
+        for name in ("stop", "cancel"):
+            fn = getattr(self.tts, name, None)
+            if callable(fn):
+                try:
+                    fn()
+                except Exception:
+                    pass
+                break
+
+    def arm(self) -> bool:
+        if not self.wake_manager:
+            self._set_state(VoiceState.DISARMED, self.last_error or "wake manager unavailable")
+            return False
+        try:
+            status = self.wake_manager.start()
+        except Exception as exc:
+            self._set_state(VoiceState.ERROR, str(exc)[:300])
+            return False
+        if not status.get("available") or self.wake_manager.active is None:
+            self._set_state(VoiceState.DISARMED, status.get("note") or "real wake engine unavailable")
+            return False
+        self._set_state(VoiceState.ARMED)
+        return True
+
+    def disarm(self):
+        try:
+            if self.wake_manager:
+                self.wake_manager.stop()
+        finally:
+            self._set_state(VoiceState.DISARMED)
 
     def _transcribe(self, pcm: bytes) -> str:
         import io
@@ -236,52 +286,98 @@ class LiveVoiceV2:
             w.setframerate(self.sr)
             w.writeframes(bytes(pcm))
         buf.seek(0)
-        seg, _ = self._whisper_model.transcribe(buf, language="tr", vad_filter=True)
-        return " ".join(s.text for s in seg).strip()
+        segments, _ = self._whisper_model.transcribe(buf, language="tr", vad_filter=True)
+        return " ".join(s.text for s in segments).strip()
+
+    def _handle_utterance(self, pcm: bytes):
+        if not self._utterance_lock.acquire(blocking=False):
+            return
+        try:
+            if not self.available:
+                return
+            direct_barge_in = self._barge_in_pending
+            self._barge_in_pending = False
+            if not direct_barge_in and self.state not in (VoiceState.ARMED, VoiceState.SPEAKING):
+                return
+            if not direct_barge_in:
+                # False means no wake detection. Never send non-wake audio to STT.
+                hit = self.wake_manager.process_chunk(pcm)
+                if not hit:
+                    return
+            self._set_state(VoiceState.LISTENING)
+            self.stack.mark("stt")
+            text = self._transcribe(pcm)
+            self.stack.mark("stt")
+            if not text:
+                self._set_state(VoiceState.ARMED)
+                return
+            self._set_state(VoiceState.PROCESSING)
+            self.stack.mark("llm")
+            answer = self.agent.handle(text)
+            self.stack.mark("llm")
+            if answer is None:
+                self._set_state(VoiceState.ARMED)
+                return
+            self._set_state(VoiceState.SPEAKING)
+            self.stack.tts_start()
+            try:
+                self.stack.mark("tts")
+                self.tts.speak(answer)
+                self.stack.mark("tts")
+            finally:
+                self.stack.tts_stop()
+                self._set_state(VoiceState.ARMED)
+            self.stack.commit()
+        except Exception as exc:
+            self.stack.tts_stop()
+            self._set_state(VoiceState.ERROR, str(exc)[:300])
+            if self.stack.on_event:
+                self.stack.on_event({"type": "voice_error", "error": str(exc)[:300], "ts": time.time()})
+        finally:
+            self._utterance_lock.release()
 
     def run(self) -> None:
-        import sounddevice as sd
+        try:
+            import sounddevice as sd
+        except Exception as exc:
+            self._set_state(VoiceState.ERROR, f"sounddevice unavailable: {str(exc)[:240]}")
+            return
+        if not self.arm():
+            return
         self.running = True
         frame_samples = int(self.sr * 0.03)
 
-        def process_utterance(pcm: bytes):
-            try:
-                # 1) gerçek audio-level wake engine (varsa)
-                if self.wake_manager is not None and self.wake_manager.active is not None:
-                    hit = self.wake_manager.process_chunk(pcm)
-                    if hit is None:
-                        return  # wake duyulmadı: STT'e bile gerek yok
-                text = self._transcribe(pcm)
-                self.stack.mark("stt")
-                if self.wake_manager is not None and self.wake_manager.active is not None:
-                    cmd = text.strip(" ,.:;-")  # wake zaten audio'da doğrulandı
-                else:
-                    if not text or self.wake not in text.lower():
-                        return
-                    cmd = text.lower().split(self.wake, 1)[1].strip(" ,.:;-") or text
-                self.stack.mark("llm")
-                answer = self.agent.handle(cmd)
-                self.stack.mark("llm")
-                try:
-                    self.stack.tts_start()
-                    self.stack.mark("tts")
-                    self.tts.speak(answer)
-                    self.stack.mark("tts")
-                finally:
-                    self.stack.tts_stop()
-            except Exception as exc:
-                if self.stack.on_event:
-                    self.stack.on_event({"type": "voice_error", "error": str(exc)[:300], "ts": time.time()})
-
         def callback(indata, frames, t, status):
-            ev = self.stack.feed_frame(indata[:, 0].tobytes())
+            if status:
+                self.last_error = str(status)[:300]
+            frame = indata[:, 0].tobytes()
+            ev = self.stack.feed_frame(frame)
+            if ev and ev["type"] == "barge_in":
+                if self.state == VoiceState.SPEAKING:
+                    self._barge_in_pending = True
+                    self._set_state(VoiceState.LISTENING)
+                return
             if ev and ev["type"] == "speech_end":
-                threading.Thread(target=process_utterance, args=(bytes(self.stack.buffer),), daemon=True).start()
+                threading.Thread(
+                    target=self._handle_utterance,
+                    args=(bytes(self.stack.buffer),),
+                    daemon=True,
+                    name="ultron-voice-utterance",
+                ).start()
 
-        with sd.InputStream(samplerate=self.sr, channels=1, dtype="int16",
-                            blocksize=frame_samples, callback=callback):
-            while self.running:
-                time.sleep(0.2)
+        try:
+            with sd.InputStream(samplerate=self.sr, channels=1, dtype="int16",
+                                blocksize=frame_samples, callback=callback):
+                while self.running:
+                    time.sleep(0.2)
+        except Exception as exc:
+            self._set_state(VoiceState.ERROR, str(exc)[:300])
+        finally:
+            self.running = False
+            if self.state != VoiceState.DISARMED:
+                self.disarm()
 
     def stop(self) -> None:
         self.running = False
+        self._barge_in_pending = False
+        self.disarm()
