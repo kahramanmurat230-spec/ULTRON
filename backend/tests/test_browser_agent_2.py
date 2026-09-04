@@ -21,6 +21,7 @@ def test_browser_2_risk_and_explicit_workflow():
 def test_browser_text_and_role_targets_use_explicit_playwright_locators():
     class Locator:
         def __init__(self, kind, value): self.kind, self.value = kind, value
+        @property
         def first(self): return self
         def count(self): return 1
         def inner_text(self, **_): return self.value
@@ -65,8 +66,9 @@ def test_browser_text_and_role_targets_use_explicit_playwright_locators():
 def test_browser_submit_requires_unambiguous_form_without_selector():
     class Locator:
         def __init__(self, count): self._count = count
-        def count(self): return self._count
+        @property
         def first(self): return self
+        def count(self): return self._count
         def evaluate(self, _): return "form"
     class Page:
         url = "about:blank"
