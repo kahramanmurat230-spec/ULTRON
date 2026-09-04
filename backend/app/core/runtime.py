@@ -26,6 +26,7 @@ from app.code_intel.analyzer import CodeIntel
 from app.proactive.monitor import ProactiveMonitor
 from app.core import doctor as doctor_mod
 from app.telemetry.system_stats import get_system_stats
+from app.core.self_awareness import SelfAwareness
 
 class UltronRuntime:
     def __init__(self, settings_path='config/settings.json'):
@@ -58,6 +59,7 @@ class UltronRuntime:
         self.adaptive=AdaptivePersona(); self.emotion_log=EmotionLog(); self.semv2=SemanticMemoryV2(self.memory)
         self.world_context_fn=None
         self.agent=Agent(self.brain,self.executor,self.memory,self.registry,self.settings,self.audit,self.tts,semantic_memory=self.semantic_memory,planner=self.planner,vision_llm=self.vision_llm,adaptive=self.adaptive,router=self.router,world_fn=lambda:self.world_context_fn,redact_fn=self.vault.redact)
+        self.self_awareness=SelfAwareness(registry=self.registry,doctor=doctor_mod,tts=self.tts,brain=self.brain)
         self.live_voice=LiveVoice(self.agent,self.tts,self.settings)
         self.proactive=ProactiveMonitor(self.settings,self._proactive_event)
 
@@ -69,6 +71,9 @@ class UltronRuntime:
             except Exception: self._models_cache["models"]=[]
             self._models_cache["ts"]=now
         return self._models_cache["models"]
+
+    def self_awareness_report(self):
+        return self.self_awareness.report()
 
     def self_diagnostic(self):
         import time
@@ -100,6 +105,7 @@ class UltronRuntime:
         reg=self.registry
         reg.register('system_status',system_status,'Gerçek sistem telemetrisi getirir.')
         reg.register('self_diagnostic',self.self_diagnostic,"ULTRON'un tüm çekirdek modüllerini salt-okunur biçimde teşhis eder.")
+        reg.register('self_awareness',self.self_awareness_report,"ULTRON'un gerçek yeteneklerini ve mevcut yerel durumunu salt-okunur bildirir.")
         reg.register('open_application',open_application,'Windows uygulaması açar.',{'type':'object','properties':{'name':{'type':'string'}},'required':['name']})
         reg.register('open_url',open_url,'URLyi Chrome ile açar.',{'type':'object','properties':{'url':{'type':'string'}},'required':['url']})
         reg.register('search_web',search_web,'Web araması açar.',{'type':'object','properties':{'query':{'type':'string'}},'required':['query']})
@@ -205,8 +211,7 @@ class UltronRuntime:
             except Exception as e:a=f'HATA — {e}'
             results.append(f'{i}. Soru: {r}\nUltron: {a}')
         return f'Toplam {len(req)} soru işlendi.\n\n'+'\n\n'.join(results)
-    def reload_config(self):
-        self.settings=json.loads(Path(self.settings_path).read_text(encoding='utf-8')); self.agent.persona.mode=self.settings.get('persona_guard_mode','reframe'); pm=self.settings.get('proactive',{}); self.proactive.ram_limit=float(pm.get('ram_warning_percent',90)); self.proactive.cpu_limit=float(pm.get('cpu_warning_percent',95)); self.proactive.disk_limit=float(pm.get('disk_warning_percent',95)); return self.settings
+    def reload_config(self):self.settings=json.loads(Path(self.settings_path).read_text(encoding='utf-8')); self.agent.persona.mode=self.settings.get('persona_guard_mode','reframe'); pm=self.settings.get('proactive',{}); self.proactive.ram_limit=float(pm.get('ram_warning_percent',90)); self.proactive.cpu_limit=float(pm.get('cpu_warning_percent',95)); self.proactive.disk_limit=float(pm.get('disk_warning_percent',95)); return self.settings
     def start_proactive(self):self.proactive.start()
     def _proactive_event(self,message):self.memory.add('proactive',message);self.audit.write('PROACTIVE',message);print(f'[ULTRON] {message}')
     def _get_browser(self):
@@ -228,7 +233,3 @@ class UltronRuntime:
             stack=getattr(self,'live_stack',None) or VoiceStackV2(); self.live_stack=stack; self.live_voice_v2=LiveVoiceV2(self.agent,self.tts,self.settings,stack)
             import threading; threading.Thread(target=self.live_voice_v2.run,daemon=True).start()
         except Exception:self.live_voice.start()
-    def stop_live_voice(self):
-        v2=getattr(self,'live_voice_v2',None)
-        if v2:v2.stop()
-        self.live_voice.stop()
