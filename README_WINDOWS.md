@@ -9,10 +9,12 @@
 5. Masaüstü arayüzü: `http://localhost:5173`
 6. Backend: `http://127.0.0.1:8000`
 
-## Neural Voice
+## Local Voice
 
-ULTRON yalnızca Microsoft Edge Neural TTS kullanır (`tr-TR-AhmetNeural`).
-Robotic eSpeak/SAPI/browser speech fallback'i yoktur. Neural TTS erişilemiyorsa ULTRON sessiz kalır ve hatayı raporlar.
+ULTRON'un TTS yolu tamamen lokaldir ve ağ üzerinden ses sentezi yapmaz.
+Öncelikli motor **Piper local**'dır; Piper modeli yoksa yerel `eSpeak-ng` kullanılabilir.
+Uygun yerel motor yoksa ULTRON başarılı ses üretmiş gibi davranmaz ve `UNAVAILABLE`/hata bildirir.
+Piper modelini lisansına uygun şekilde `backend\data\voice\piper\tr_TR-ahmet-medium.onnx` konumuna yerleştirin.
 
 ## Güvenlik
 
@@ -20,7 +22,7 @@ Backend ve Vite varsayılan olarak yalnızca localhost'a bind edilir. LAN erişi
 
 ## Self Diagnostic
 
-"Ultron, kendini kontrol et ve hata varsa bildir." komutu; agent, tool registry, memory, planner, neural voice, vision, proactive monitor, Ollama, veritabanları, master rules, donanım, portlar ve gerçek hata olaylarını kontrol eder.
+"Ultron, kendini kontrol et ve hata varsa bildir." komutu; agent, tool registry, memory, planner, local voice, vision, proactive monitor, Ollama, veritabanları, master rules, donanım, portlar ve gerçek hata olaylarını kontrol eder.
 
 ## Test
 
