@@ -135,23 +135,37 @@ class GUIAgent:
 
     def _dispatch(self, action: GUIAction) -> Mapping[str, Any]:
         a = action.args
-        fn = {
-            "observe": self.gui.read_screen_elements,
-            "find_text": lambda: {"element": GUIAutomationMatcher.text(a.get("elements", []), a.get("text", ""))},
-            "find_window": lambda: self.gui.find_window(a["title"]),
-            "click": lambda: self.gui.click(a["x"], a["y"]),
-            "double_click": lambda: self.gui.double_click(a["x"], a["y"]),
-            "right_click": lambda: self.gui.right_click(a["x"], a["y"]),
-            "move": lambda: self.gui.move(a["x"], a["y"]),
-            "scroll": lambda: self.gui.scroll(a["amount"], a.get("x"), a.get("y")),
-            "type": lambda: self.gui.type_text(a["text"]),
-            "press": lambda: self.gui.press(a["key"]),
-            "hotkey": lambda: self.gui.hotkey(a["keys"]),
-            "click_text": lambda: self.gui.click_text(a["text"], verify=False),
-            "focus_window": lambda: self.gui.focus_window(a["title"]),
-            "locate_and_click": lambda: self.gui.locate_and_click(a["image"], a.get("confidence", .8)),
-        }[action.action]
-        return fn()
+        # Resolve only the requested operation. Keeping callables lazy prevents
+        # lightweight test doubles from needing every GUIAutomation method.
+        if action.action == "observe":
+            return self.gui.read_screen_elements()
+        if action.action == "find_text":
+            return {"element": GUIAutomationMatcher.text(a.get("elements", []), a.get("text", ""))}
+        if action.action == "find_window":
+            return self.gui.find_window(a["title"])
+        if action.action == "click":
+            return self.gui.click(a["x"], a["y"])
+        if action.action == "double_click":
+            return self.gui.double_click(a["x"], a["y"])
+        if action.action == "right_click":
+            return self.gui.right_click(a["x"], a["y"])
+        if action.action == "move":
+            return self.gui.move(a["x"], a["y"])
+        if action.action == "scroll":
+            return self.gui.scroll(a["amount"], a.get("x"), a.get("y"))
+        if action.action == "type":
+            return self.gui.type_text(a["text"])
+        if action.action == "press":
+            return self.gui.press(a["key"])
+        if action.action == "hotkey":
+            return self.gui.hotkey(a["keys"])
+        if action.action == "click_text":
+            return self.gui.click_text(a["text"], verify=False)
+        if action.action == "focus_window":
+            return self.gui.focus_window(a["title"])
+        if action.action == "locate_and_click":
+            return self.gui.locate_and_click(a["image"], a.get("confidence", .8))
+        raise ValueError(f"unsupported GUI action: {action.action}")
 
     def _verify(self, action: GUIAction, result: Mapping[str, Any]) -> Mapping[str, Any]:
         if action.action in {"click_text", "locate_and_click"} and "verification" in result:
