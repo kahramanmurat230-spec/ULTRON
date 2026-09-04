@@ -4,7 +4,7 @@ from app.agent.memory_planning import MemoryPlanningContext
 
 
 class Planner:
-    """Bounded local-LLM planner with strict structural validation and memory context."""
+    """Bounded local-LLM planner with capability-aware validation."""
 
     MAX_STEPS = 12
 
@@ -23,6 +23,11 @@ class Planner:
         except json.JSONDecodeError as exc:
             raise ValueError("Plan JSON bozuk.") from exc
 
+    def _tool_capability(self, tool):
+        item = self.registry.get(tool) or {}
+        fn = item.get("fn")
+        return callable(fn), bool(item.get("dangerous"))
+
     def validate_plan(self, plan, goal=None):
         if not isinstance(plan, dict):
             raise ValueError("Geçersiz plan: object bekleniyor.")
@@ -39,6 +44,9 @@ class Planner:
             tool = raw.get("tool")
             if not isinstance(tool, str) or tool not in allowed:
                 raise ValueError(f"Plan bilinmeyen araç içeriyor: {tool}")
+            available, dangerous = self._tool_capability(tool)
+            if not available:
+                raise ValueError(f"Plan aracı kullanılamıyor: {tool}")
             args = raw.get("arguments", raw.get("args", {}))
             if not isinstance(args, dict):
                 raise ValueError(f"Plan argümanları object olmalı: {tool}")
@@ -56,7 +64,15 @@ class Planner:
                     raise ValueError(f"Geçersiz bağımlılık: step {i} -> {dep}")
                 if dep not in deps:
                     deps.append(dep)
-            normalized.append({"index": i, "tool": tool, "arguments": args, "reason": reason[:300], "depends_on": deps})
+            normalized.append({
+                "index": i,
+                "tool": tool,
+                "arguments": args,
+                "reason": reason[:300],
+                "depends_on": deps,
+                "available": available,
+                "dangerous": dangerous,
+            })
         return {"goal": str(plan.get("goal") or goal or "")[:1000], "steps": normalized, "planner": "local-hybrid", "bounded": True}
 
     def make_plan(self, goal):
@@ -71,7 +87,7 @@ class Planner:
             "Plan kısa, güvenli ve uygulanabilir olmalı. En fazla 12 adım üret. "
             "Her adım tool adı, arguments, reason ve önceki adımlara depends_on içersin. "
             "depends_on yalnızca kendisinden önceki 0-tabanlı step index'lerini içerebilir. "
-            "Tehlikeli işlemleri kullanıcı onayı olmadan çalıştırma; sadece planla. "
+            "Yalnızca mevcut kullanılabilir araçları seç. Tehlikeli işlemleri kullanıcı onayı olmadan çalıştırma; sadece planla. "
             "Kullanılabilecek araçlar: " + tool_names + ".\n" + memory_instruction + "\n"
             "JSON biçimi: {\"goal\": str, \"steps\": [{\"tool\": str, \"arguments\": object, "
             "\"reason\": str, \"depends_on\": [int]}]}."
