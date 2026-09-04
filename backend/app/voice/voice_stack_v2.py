@@ -1,8 +1,10 @@
 """Voice Stack V2 — real-time voice with VAD, wake-word gating, barge-in and metrics."""
+from __future__ import annotations
+
 import array
 import math
-import time
 import threading
+import time
 from enum import Enum
 
 
@@ -207,11 +209,15 @@ class LiveVoiceV2:
         self.wake = str(wake_cfg.get("keyword", settings.get("wake_word", "ultron"))).lower()
         self._whisper_model = None
         self.wake_manager = None
+        self._utterance_lock = threading.Lock()
+        self._barge_in_pending = False
         try:
             from app.voice.wake import WakeWordManager
             self.wake_manager = WakeWordManager(settings)
         except Exception as exc:
             self.last_error = str(exc)[:300]
+        if getattr(self.tts, "stop", None) or getattr(self.tts, "cancel", None):
+            self.stack.on_interrupt = self._interrupt_tts
 
     @property
     def available(self) -> bool:
@@ -231,6 +237,16 @@ class LiveVoiceV2:
         self.last_error = error
         if self.stack.on_event:
             self.stack.on_event({"type": "voice_state", "state": state.value, "error": error, "ts": time.time()})
+
+    def _interrupt_tts(self):
+        for name in ("stop", "cancel"):
+            fn = getattr(self.tts, name, None)
+            if callable(fn):
+                try:
+                    fn()
+                except Exception:
+                    pass
+                break
 
     def arm(self) -> bool:
         if not self.wake_manager:
@@ -270,17 +286,26 @@ class LiveVoiceV2:
             w.setframerate(self.sr)
             w.writeframes(bytes(pcm))
         buf.seek(0)
-        seg, _ = self._whisper_model.transcribe(buf, language="tr", vad_filter=True)
-        return " ".join(s.text for s in seg).strip()
+        segments, _ = self._whisper_model.transcribe(buf, language="tr", vad_filter=True)
+        return " ".join(s.text for s in segments).strip()
 
     def _handle_utterance(self, pcm: bytes):
+        if not self._utterance_lock.acquire(blocking=False):
+            return
         try:
-            if not self.available or self.state not in (VoiceState.ARMED, VoiceState.SPEAKING):
+            if not self.available:
                 return
-            hit = self.wake_manager.process_chunk(pcm)
-            if hit is None:
+            direct_barge_in = self._barge_in_pending
+            self._barge_in_pending = False
+            if not direct_barge_in and self.state not in (VoiceState.ARMED, VoiceState.SPEAKING):
                 return
+            if not direct_barge_in:
+                # False means no wake detection. Never send non-wake audio to STT.
+                hit = self.wake_manager.process_chunk(pcm)
+                if not hit:
+                    return
             self._set_state(VoiceState.LISTENING)
+            self.stack.mark("stt")
             text = self._transcribe(pcm)
             self.stack.mark("stt")
             if not text:
@@ -308,23 +333,37 @@ class LiveVoiceV2:
             self._set_state(VoiceState.ERROR, str(exc)[:300])
             if self.stack.on_event:
                 self.stack.on_event({"type": "voice_error", "error": str(exc)[:300], "ts": time.time()})
+        finally:
+            self._utterance_lock.release()
 
     def run(self) -> None:
-        import sounddevice as sd
+        try:
+            import sounddevice as sd
+        except Exception as exc:
+            self._set_state(VoiceState.ERROR, f"sounddevice unavailable: {str(exc)[:240]}")
+            return
         if not self.arm():
             return
         self.running = True
         frame_samples = int(self.sr * 0.03)
 
         def callback(indata, frames, t, status):
+            if status:
+                self.last_error = str(status)[:300]
             frame = indata[:, 0].tobytes()
             ev = self.stack.feed_frame(frame)
             if ev and ev["type"] == "barge_in":
                 if self.state == VoiceState.SPEAKING:
+                    self._barge_in_pending = True
                     self._set_state(VoiceState.LISTENING)
                 return
             if ev and ev["type"] == "speech_end":
-                threading.Thread(target=self._handle_utterance, args=(bytes(self.stack.buffer),), daemon=True).start()
+                threading.Thread(
+                    target=self._handle_utterance,
+                    args=(bytes(self.stack.buffer),),
+                    daemon=True,
+                    name="ultron-voice-utterance",
+                ).start()
 
         try:
             with sd.InputStream(samplerate=self.sr, channels=1, dtype="int16",
@@ -340,4 +379,5 @@ class LiveVoiceV2:
 
     def stop(self) -> None:
         self.running = False
+        self._barge_in_pending = False
         self.disarm()
