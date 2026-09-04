@@ -1,29 +1,16 @@
-"""Real Browser Agent foundation — Playwright-backed, worker-thread driven.
+"""Real Browser Agent — Playwright-backed, worker-thread driven.
 
-BROWSER -> PAGE -> DOM -> ELEMENTS -> ACTION -> OBSERVE -> VERIFY.
+BROWSER -> PAGE -> DOM -> TARGET -> ACTION -> OBSERVE -> VERIFY.
 
-Launch strategy (in order, first available wins):
-  1. ULTRON_BROWSER_CHANNEL env (chrome / msedge / chromium...)
-  2. bundled Playwright chromium (after `python -m playwright install chromium`)
-  3. system Chrome channel
-  4. system Edge channel
-If none can launch, an honest RuntimeError is raised — no fake browsing.
-
-Risk model:
-  SAFE    navigate / read / find elements / screenshot / verify
-  MEDIUM  click / type / select / scroll (state-changing) -> registered as
-          dangerous tools, so they require the existing approval gate.
-
-All operations run on a dedicated worker thread through a submit queue:
-Playwright's sync API is thread-bound, and the executor calls us from
-asyncio.to_thread — this serializes access safely and adds per-action
-timeouts. Actions are audited; downloads land in a sandbox-checked folder.
+Production uses a real Playwright browser. If no browser can launch, the
+agent raises an honest RuntimeError; it never fabricates browser results.
+State-changing operations remain MEDIUM risk and are protected by the
+existing executor/approval gate.
 """
 import os
 import queue
 import threading
 import time
-import urllib.parse
 from pathlib import Path
 
 DEFAULT_TIMEOUT_S = 20.0
@@ -44,7 +31,7 @@ def browser_action_risk(action: str) -> str:
 
 
 def normalize_url(url: str) -> str:
-    """Accept http(s) and file:// URLs; add https:// to bare hosts."""
+    """Accept http(s), file and about:blank; add https:// to bare hosts."""
     u = (url or "").strip()
     if not u:
         raise ValueError("empty url")
@@ -57,28 +44,22 @@ def normalize_url(url: str) -> str:
 
 def _default_engine(headless: bool, channel: str | None,
                     executable: str | None = None, extra_args=None):
-    """Real engine: Playwright Chromium — explicit executable, channel
-    fallback, bundled chromium. No engine -> honest RuntimeError."""
     from playwright.sync_api import sync_playwright
-
     pw = sync_playwright().start()
     args = list(extra_args or [])
-    # container/root ortamlarında sandbox kapalı olmalı (gerçek ihtiyaç)
     try:
-        import os as _os
-        if _os.geteuid() == 0:
+        if os.geteuid() == 0:
             args.append("--no-sandbox")
     except Exception:
         pass
-
     attempts = []
     if executable:
         attempts.append(("executable:" + executable,
                          dict(headless=headless, executable_path=executable, args=args)))
-    errors = []
     for ch in ([channel] if channel else []) + [None, "chrome", "msedge"]:
         attempts.append((ch or "bundled-chromium",
                          dict(headless=headless, args=args, **({"channel": ch} if ch else {}))))
+    errors = []
     seen = set()
     for name, kw in attempts:
         if name in seen:
@@ -86,25 +67,23 @@ def _default_engine(headless: bool, channel: str | None,
         seen.add(name)
         try:
             return pw.chromium.launch(**kw), pw
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             errors.append(f"{name}: {str(exc)[:120]}")
     try:
         pw.stop()
     except Exception:
         pass
     raise RuntimeError(
-        "Tarayıcı başlatılamadı (Playwright). Kurulum: `python -m playwright "
-        "install chromium`, sistem Chrome/Edge ya da ULTRON_BROWSER_EXECUTABLE="
-        "<path>. Denenen: " + " | ".join(errors))
+        "Tarayıcı başlatılamadı (Playwright). Kurulum: `python -m playwright install chromium`, "
+        "sistem Chrome/Edge ya da ULTRON_BROWSER_EXECUTABLE=<path>. Denenen: "
+        + " | ".join(errors))
 
 
 class _Worker:
-    """Single dedicated browser thread (Playwright sync API is thread-bound)."""
-
+    """Single dedicated browser thread; Playwright sync API is thread-bound."""
     def __init__(self):
         self.q: queue.Queue = queue.Queue()
-        self.thread = threading.Thread(target=self._loop, daemon=True,
-                                       name="ultron-browser")
+        self.thread = threading.Thread(target=self._loop, daemon=True, name="ultron-browser")
         self.thread.start()
 
     def _loop(self):
@@ -115,7 +94,7 @@ class _Worker:
                 return
             try:
                 fut["result"] = fn()
-            except BaseException as exc:  # noqa: BLE001
+            except BaseException as exc:
                 fut["error"] = exc
             finally:
                 fut["done"] = True
@@ -143,7 +122,6 @@ class BrowserAgent:
         bs = (settings or {}).get("browser", {})
         self.headless = bool(bs.get("headless", True))
         self.channel = os.environ.get("ULTRON_BROWSER_CHANNEL", bs.get("channel"))
-        # PHASE 9: harici chromium binary (ör. konteyner) — env ayarları
         self.executable = os.environ.get("ULTRON_BROWSER_EXECUTABLE", bs.get("executable_path"))
         self.default_timeout = float(bs.get("timeout_seconds", DEFAULT_TIMEOUT_S))
         self.audit = audit
@@ -157,7 +135,6 @@ class BrowserAgent:
         self._pages: list = []
         self._current = -1
 
-    # ------------------------------------------------------------ lifecycle
     def _ensure(self):
         if self._browser is None:
             def _launch():
@@ -165,7 +142,6 @@ class BrowserAgent:
                 context = browser.new_context(accept_downloads=True)
                 page = context.new_page()
                 return browser, pw, context, page
-
             self._browser, self._pw, self._context, page = self._worker.submit(
                 _launch, self.default_timeout * 3)
             self._pages = [page]
@@ -185,6 +161,7 @@ class BrowserAgent:
                 pass
             self._browser = None
             self._pages = []
+            self._current = -1
         self._worker.stop()
 
     def _log(self, event, detail=""):
@@ -194,7 +171,6 @@ class BrowserAgent:
             except Exception:
                 pass
 
-    # ------------------------------------------------------------ actions
     def _act(self, action: str, fn, timeout_s: float | None = None):
         if action not in BROWSER_ACTIONS:
             raise ValueError(f"unknown browser action: {action}")
@@ -204,17 +180,38 @@ class BrowserAgent:
             out = self._worker.submit(lambda: fn(page), timeout_s or self.default_timeout)
             self._log("ACTION_OK", f"{action} in {time.time() - t0:.2f}s")
             return out
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self._log("ACTION_ERROR", f"{action}: {str(exc)[:160]}")
             raise
+
+    @staticmethod
+    def _target(page, target: str):
+        """Resolve explicit CSS/text/role/label targets without guessing."""
+        if not isinstance(target, str) or not target.strip():
+            raise ValueError("target required")
+        t = target.strip()
+        if t.startswith("role="):
+            spec = t[5:].strip()
+            if not spec:
+                raise ValueError("role target missing role")
+            if "[name=" in spec and spec.endswith("]"):
+                role, rest = spec.split("[name=", 1)
+                name = rest[:-1].strip().strip("\"'")
+                return page.get_by_role(role.strip(), name=name)
+            return page.get_by_role(spec)
+        if t.startswith("text="):
+            return page.get_by_text(t[5:])
+        if t.startswith("label="):
+            return page.get_by_label(t[6:])
+        if t.startswith("placeholder="):
+            return page.get_by_placeholder(t[12:])
+        return page.locator(t)
 
     def navigate(self, url: str) -> dict:
         u = normalize_url(url)
         def op(page):
-            resp = page.goto(u, wait_until="domcontentloaded",
-                             timeout=int(self.default_timeout * 1000))
-            return {"url": page.url, "title": page.title(),
-                    "status": resp.status if resp else None}
+            resp = page.goto(u, wait_until="domcontentloaded", timeout=int(self.default_timeout * 1000))
+            return {"url": page.url, "title": page.title(), "status": resp.status if resp else None}
         return self._act("navigate", op)
 
     def title(self) -> str:
@@ -225,31 +222,30 @@ class BrowserAgent:
 
     def read_text(self, selector: str | None = None, limit: int = 5000) -> dict:
         def op(page):
-            if selector:
-                loc = page.locator(selector).first
-                txt = loc.inner_text(timeout=int(self.default_timeout * 1000))
-            else:
-                txt = page.inner_text("body", timeout=int(self.default_timeout * 1000))
-            return {"text": txt[:limit], "url": page.url}
+            loc = self._target(page, selector) if selector else page.locator("body")
+            txt = loc.first.inner_text(timeout=int(self.default_timeout * 1000))
+            return {"text": txt[:max(0, int(limit))], "url": page.url}
         return self._act("read_text", op)
 
-    def read_dom(self, selector: str, limit: int = 20000) -> dict:
+    def read_dom(self, selector: str = "body", limit: int = 20000) -> dict:
         def op(page):
-            html = page.locator(selector).first.inner_html(
-                timeout=int(self.default_timeout * 1000))
-            return {"html": html[:limit]}
+            html = self._target(page, selector).first.inner_html(timeout=int(self.default_timeout * 1000))
+            return {"html": html[:max(0, int(limit))], "url": page.url}
         return self._act("read_dom", op)
 
     def find_elements(self, selector: str | None = None, text: str | None = None,
+                      role: str | None = None, name: str | None = None,
                       limit: int = 10) -> list[dict]:
         def op(page):
-            if selector:
-                loc = page.locator(selector)
+            if role:
+                loc = page.get_by_role(role, name=name) if name else page.get_by_role(role)
             elif text:
                 loc = page.get_by_text(text)
+            elif selector:
+                loc = self._target(page, selector)
             else:
-                raise ValueError("selector or text required")
-            n = min(loc.count(), limit)
+                raise ValueError("selector, text or role required")
+            n = min(max(0, int(loc.count())), max(0, int(limit)))
             out = []
             for i in range(n):
                 el = loc.nth(i)
@@ -257,48 +253,66 @@ class BrowserAgent:
                     box = el.bounding_box()
                 except Exception:
                     box = None
-                out.append({
-                    "index": i,
-                    "tag": el.evaluate("e => e.tagName.toLowerCase()"),
-                    "text": (el.inner_text() or "")[:120],
-                    "id": el.get_attribute("id"),
-                    "name": el.get_attribute("name"),
-                    "aria": el.get_attribute("aria-label"),
-                    "rect": box,
-                })
+                out.append({"index": i,
+                            "tag": el.evaluate("e => e.tagName.toLowerCase()"),
+                            "text": (el.inner_text() or "")[:120],
+                            "id": el.get_attribute("id"),
+                            "name": el.get_attribute("name"),
+                            "aria": el.get_attribute("aria-label"),
+                            "rect": box})
             return out
         return self._act("find_elements", op)
 
     def click(self, selector: str) -> dict:
-        return self._act("click",
-                         lambda page: (page.click(selector, timeout=int(self.default_timeout * 1000)),
-                                       {"clicked": selector})[1])
+        def op(page):
+            self._target(page, selector).first.click(timeout=int(self.default_timeout * 1000))
+            return {"clicked": selector}
+        return self._act("click", op)
 
     def type(self, selector: str, text: str, press_enter: bool = False) -> dict:
         def op(page):
-            page.fill(selector, text, timeout=int(self.default_timeout * 1000))
+            loc = self._target(page, selector).first
+            loc.fill(text, timeout=int(self.default_timeout * 1000))
             if press_enter:
-                page.press(selector, "Enter")
-            return {"typed": len(text), "selector": selector}
+                loc.press("Enter")
+            return {"typed": len(text), "selector": selector, "submitted": bool(press_enter)}
         return self._act("type", op)
 
+    def press_enter(self, selector: str) -> dict:
+        return self._act("press_enter", lambda page: (self._target(page, selector).first.press("Enter"),
+                                                        {"pressed": "Enter", "selector": selector})[1])
+
+    def submit(self, selector: str | None = None) -> dict:
+        def op(page):
+            if selector:
+                loc = self._target(page, selector).first
+                tag = (loc.evaluate("e => e.tagName.toLowerCase()") or "").lower()
+                if tag == "form":
+                    loc.evaluate("e => e.requestSubmit()")
+                else:
+                    loc.press("Enter")
+                return {"submitted": selector, "method": "requestSubmit" if tag == "form" else "Enter"}
+            forms = page.locator("form")
+            if forms.count() != 1:
+                raise ValueError("submit without selector requires exactly one form")
+            forms.first.evaluate("e => e.requestSubmit()")
+            return {"submitted": "form", "method": "requestSubmit"}
+        return self._act("submit", op)
+
     def select(self, selector: str, value: str) -> dict:
-        return self._act("select",
-                         lambda page: (page.select_option(selector, value,
-                                                          timeout=int(self.default_timeout * 1000)),
-                                       {"selected": value})[1])
+        def op(page):
+            self._target(page, selector).first.select_option(value, timeout=int(self.default_timeout * 1000))
+            return {"selected": value, "selector": selector}
+        return self._act("select", op)
 
     def scroll(self, dy: int = 600) -> dict:
-        return self._act("scroll",
-                         lambda page: (page.mouse.wheel(0, int(dy)), {"scrolled": int(dy)})[1])
+        return self._act("scroll", lambda page: (page.mouse.wheel(0, int(dy)), {"scrolled": int(dy)})[1])
 
     def back(self) -> dict:
-        return self._act("back", lambda page: (page.go_back(
-            timeout=int(self.default_timeout * 1000)), {"ok": True})[1])
+        return self._act("back", lambda page: (page.go_back(timeout=int(self.default_timeout * 1000)), {"ok": True})[1])
 
     def forward(self) -> dict:
-        return self._act("forward", lambda page: (page.go_forward(
-            timeout=int(self.default_timeout * 1000)), {"ok": True})[1])
+        return self._act("forward", lambda page: (page.go_forward(timeout=int(self.default_timeout * 1000)), {"ok": True})[1])
 
     def new_tab(self, url: str | None = None) -> dict:
         def op(page):
@@ -306,8 +320,7 @@ class BrowserAgent:
             self._pages.append(p)
             self._current = len(self._pages) - 1
             if url:
-                p.goto(normalize_url(url), wait_until="domcontentloaded",
-                       timeout=int(self.default_timeout * 1000))
+                p.goto(normalize_url(url), wait_until="domcontentloaded", timeout=int(self.default_timeout * 1000))
             return {"tab": self._current, "url": p.url}
         return self._act("new_tab", op)
 
@@ -323,6 +336,8 @@ class BrowserAgent:
     def close_tab(self, index: int | None = None) -> dict:
         def op(_page):
             idx = self._current if index is None else int(index)
+            if not 0 <= idx < len(self._pages):
+                raise ValueError(f"tab {idx} yok")
             if len(self._pages) <= 1:
                 raise ValueError("tek sekme kapatılamaz")
             self._pages[idx].close()
@@ -333,8 +348,7 @@ class BrowserAgent:
 
     def screenshot(self, path: str | None = None) -> dict:
         def op(page):
-            target = str(Path(path) if path else
-                         self.downloads_dir / f"browser_{int(time.time())}.png")
+            target = str(Path(path) if path else self.downloads_dir / f"browser_{int(time.time())}.png")
             page.screenshot(path=target, timeout=int(self.default_timeout * 1000))
             return {"path": target, "bytes": Path(target).stat().st_size}
         return self._act("screenshot", op)
@@ -342,22 +356,19 @@ class BrowserAgent:
     def wait_for(self, selector: str | None = None, text: str | None = None,
                  timeout_s: float | None = None) -> dict:
         tmo = int((timeout_s or self.default_timeout) * 1000)
-
         def op(page):
             if selector:
-                page.wait_for_selector(selector, timeout=tmo)
+                self._target(page, selector).first.wait_for(timeout=tmo)
                 return {"found": selector}
             if text:
-                page.wait_for_selector(f"text={text}", timeout=tmo)
+                page.get_by_text(text).first.wait_for(timeout=tmo)
                 return {"found": text}
             raise ValueError("selector or text required")
         return self._act("wait_for", op)
 
-    # ------------------------------------------------------------ verify
     def verify(self, url_contains: str | None = None, title_contains: str | None = None,
                selector_exists: str | None = None, text_contains: str | None = None) -> dict:
-        """Post-action verification: OBSERVE the page and check expectations."""
-
+        """Post-action verification: OBSERVE the page and check all expectations."""
         def op(page):
             checks = {}
             if url_contains is not None:
@@ -365,7 +376,7 @@ class BrowserAgent:
             if title_contains is not None:
                 checks["title_contains"] = title_contains.lower() in page.title().lower()
             if selector_exists is not None:
-                checks["selector_exists"] = page.locator(selector_exists).count() > 0
+                checks["selector_exists"] = self._target(page, selector_exists).count() > 0
             if text_contains is not None:
                 body = (page.inner_text("body") or "")[:20000]
                 checks["text_contains"] = text_contains.lower() in body.lower()

@@ -24,7 +24,7 @@ from pathlib import Path
 class Worker:
     id = "worker"
     label = "worker"
-    alt = None  # alternative worker id used when replanning
+    alt = None
 
     def run(self, goal: str, args: dict, ctx: dict) -> dict:
         raise NotImplementedError
@@ -56,6 +56,8 @@ class CodeAnalysisWorker(Worker):
 
 
 class TestWorker(Worker):
+    # This is a production worker, not a pytest test class.
+    __test__ = False
     id = "tests"
     label = "Project test suite"
     alt = None
@@ -147,7 +149,6 @@ class ReportWorker(Worker):
         if vf:
             lines.append(f"VERIFICATION: {'PASS' if not vf.get('problems') else vf['problems']}")
         report = "\n".join(lines)
-        # Optional LLM polish — only when a healthy local model exists.
         if self.router is not None and self.llm_available():
             try:
                 from app.core.model_router import TaskType
@@ -158,7 +159,7 @@ class ReportWorker(Worker):
                 if polished:
                     report = polished.strip()
             except Exception:
-                pass  # deterministic report already stands
+                pass
         return {"ok": True, "output": report}
 
 
@@ -170,7 +171,6 @@ class SupervisorAgent:
         self.workers = workers
         self.event_cb = event_cb
 
-    # ------------------------------------------------------------ planning
     def plan(self, goal: str) -> list[dict]:
         g = goal.lower()
         steps: list[dict] = []
@@ -187,7 +187,6 @@ class SupervisorAgent:
         steps.append({"label": "final report", "worker": "report", "args": {}})
         return steps
 
-    # ------------------------------------------------------------ execution
     async def submit(self, goal: str, budgets: dict | None = None, spawn: bool = True) -> dict:
         task = self.engine.create(goal, kind="supervisor",
                                   steps=self.plan(goal), budgets=budgets)
@@ -201,7 +200,6 @@ class SupervisorAgent:
             return {"ok": False, "output": {"error": f"unknown worker {step['worker']}"}}
         ctx.setdefault("outputs", {})
         result = worker.run(task["goal"], step.get("args", {}), ctx)
-        # OBSERVE + VERIFY at supervisor level; REPLAN via alternative worker
         if not result.get("ok") and worker.alt and not step.get("_alt_used"):
             if self.event_cb:
                 self.event_cb({"task_id": task["id"], "component": "supervisor",
