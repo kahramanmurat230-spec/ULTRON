@@ -58,37 +58,37 @@ export function connectWS(): void {
 
 export async function speak(text: string) {
   if (!getState().tts) return;
-  // neural edge-tts via brain first (PC açıkken)
-  fetch("/api/tts/speak", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: text.slice(0, 300) }) })
-    .then(async (r) => {
-      if (r.ok) {
-        const d = await r.json();
-        if (d.audio_b64) {
-          const bin = atob(d.audio_b64);
-          const arr = new Uint8Array(bin.length);
-          for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-          const AC = window.AudioContext || (window as any).webkitAudioContext;
-          if (AC) {
-            const ctx = new AC();
-            const audio = await ctx.decodeAudioData(arr.buffer as ArrayBuffer);
-            const src = ctx.createBufferSource();
-            src.buffer = audio;
-            setState({ speaking: true });
-            src.onended = () => setState({ speaking: false });
-            src.connect(ctx.destination);
-            src.start();
-            return;
-          }
+  // Local Piper/eSpeak audio from the ULTRON backend; no cloud/browser fallback.
+  try {
+    const r = await fetch("/api/tts/speak", {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ text: text.slice(0, 300) }),
+    });
+    if (r.ok) {
+      const d = await r.json();
+      if (d.audio_b64) {
+        const bin = atob(d.audio_b64);
+        const arr = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+        const AC = window.AudioContext || (window as any).webkitAudioContext;
+        if (AC) {
+          const ctx = new AC();
+          const audio = await ctx.decodeAudioData(arr.buffer as ArrayBuffer);
+          const src = ctx.createBufferSource();
+          src.buffer = audio;
+          setState({ speaking: true });
+          src.onended = () => setState({ speaking: false });
+          src.connect(ctx.destination);
+          src.start();
+          return;
         }
       }
-      legacySpeak(text);
-    })
-    .catch(() => legacySpeak(text));
-}
-
-function legacySpeak(_text: string) {
-  // SAPI5 / speechSynthesis permanently disabled — silence over robots.
-  // Neural stream unavailable (PC offline) => mobile stays silent by design.
+    }
+  } catch {
+    /* local backend unavailable → silence */
+  }
+  setState({ speaking: false });
 }
 
 function handle(m: any) {
@@ -110,7 +110,6 @@ function handle(m: any) {
     case "patch": setState({ patch: m.data ?? null }); break;
     case "task": setState({ task: m.data ?? null }); break;
     case "barge_in":
-      // SAPI5 disabled; neural stream cuts itself via backend/buffer stop.
       break;
     case "proactive_speech":
       speak(String(m.text ?? ""));
