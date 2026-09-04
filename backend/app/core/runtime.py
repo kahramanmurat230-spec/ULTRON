@@ -51,7 +51,7 @@ class UltronRuntime:
         self.vision_llm=VisionLLM(self.brain,self.settings); self.gui=GUIAutomation(); self.code_agent=CodeAgent(self.brain,self.root); self.code_intel=CodeIntel(str(self.root)); self._register_tools()
         self.executor=Executor(self.registry,self.permissions,self.audit)
         if getattr(self,'skills',None) is not None: self.skills.executor=self.executor
-        self.planner=Planner(self.brain,self.registry)
+        self.planner=Planner(self.brain,self.registry,semantic_memory=self.semantic_memory)
         from app.agent.adaptive_persona import AdaptivePersona
         from app.emotion.emotion_engine import EmotionLog
         from app.memory.semantic_memory_v2 import SemanticMemoryV2
@@ -78,8 +78,10 @@ class UltronRuntime:
         doctor=doctor_mod.run_doctor({'ollama_host':self.brain.base_url,'db_paths':db_paths,'rules_path':str(self.root/'config/security/master_rules.json'),'ports':(8000,5173,5174),'allow_busy_ports':True},persona=self.agent.persona)
         try: ollama=ollama_status(self.brain.base_url,self.brain.model)
         except Exception as exc: ollama={'connected':False,'error':str(exc),'models':[]}
-        checks={'agent':self.agent is not None,'tools':bool(self.registry.names()),'memory':self.memory is not None,'semantic_memory':self.semantic_memory is not None,'planner':self.planner is not None,'model_router':self.router is not None,'neural_voice':self.tts.backend()=='edge-tts-neural','vision':self.vision_llm is not None,'proactive':self.proactive is not None}
+        voice_backend=self.tts.backend()
+        checks={'agent':self.agent is not None,'tools':bool(self.registry.names()),'memory':self.memory is not None,'semantic_memory':self.semantic_memory is not None,'planner':self.planner is not None,'model_router':self.router is not None,'local_voice':voice_backend in ('piper-local','espeak-ng-local'),'vision':self.vision_llm is not None,'proactive':self.proactive is not None}
         components={k:{'status':'OK' if v else 'WARN'} for k,v in checks.items()}
+        components['local_voice']['backend']=voice_backend
         components['ollama']={'status':'OK' if ollama.get('connected') else 'WARN','model':self.brain.model,'installed':bool(ollama.get('model_installed')),'models':ollama.get('models') or []}
         components['doctor']={'status':{'PASS':'OK','WARN':'WARN','FAIL':'ERROR'}.get(doctor.get('overall'),'ERROR'),'overall':doctor.get('overall'),'summary':doctor.get('summary'),'sections':doctor.get('sections',{})}
         recent=self.audit.recent(120); error_events={'TOOL_ERROR','ERROR','EXCEPTION','FAIL','FAILED','BAŞARISIZ','HATA','RUNTIME_ERROR'}; error_lines=[]
@@ -91,7 +93,7 @@ class UltronRuntime:
         components['hardware']={'status':'WARN' if any(v is not None and v>=95 for v in (cpu,ram,disk)) else 'OK','cpu_percent':cpu,'ram_percent':ram,'disk_percent':disk,'gpus':stats.get('gpus',[]) if isinstance(stats,dict) else []}
         statuses=[v.get('status') for v in components.values()]; overall='ERROR' if 'ERROR' in statuses else ('WARN' if 'WARN' in statuses else 'OK'); warnings=[k for k,v in components.items() if v.get('status')=='WARN']; errors=[k for k,v in components.items() if v.get('status')=='ERROR']
         headline={'OK':'Tüm çekirdek kontroller geçti.','WARN':'Sistem çalışıyor; bazı bölümlerde uyarı var.','ERROR':'Kritik hata tespit edildi.'}[overall]
-        report=f"Boss, tam öz-teşhis tamamlandı. Genel durum: {overall}. {headline} CPU {cpu if cpu is not None else 'N/A'}%, RAM {ram if ram is not None else 'N/A'}%, Disk {disk if disk is not None else 'N/A'}. Neural ses: {'OK' if checks['neural_voice'] else 'WARN'}. Ollama: {'OK' if ollama.get('connected') else 'WARN'}. Son gerçek hata taraması: {len(error_lines)}. Uyarılar: {', '.join(warnings) if warnings else 'yok'}. Hatalar: {', '.join(errors) if errors else 'yok'}."
+        report=f"Boss, tam öz-teşhis tamamlandı. Genel durum: {overall}. {headline} CPU {cpu if cpu is not None else 'N/A'}%, RAM {ram if ram is not None else 'N/A'}%, Disk {disk if disk is not None else 'N/A'}. Lokal ses: {voice_backend or 'UNAVAILABLE'}. Ollama: {'OK' if ollama.get('connected') else 'WARN'}. Son gerçek hata taraması: {len(error_lines)}. Uyarılar: {', '.join(warnings) if warnings else 'yok'}. Hatalar: {', '.join(errors) if errors else 'yok'}."
         result={'ok':overall!='ERROR','overall':overall,'report':report,'ts':time.time(),'components':components,'doctor':doctor,'system':stats}; self.audit.write('SELF_DIAGNOSTIC',f'overall={overall} warnings={len(warnings)} errors={len(errors)}'); return result
 
     def _register_tools(self):
@@ -119,7 +121,7 @@ class UltronRuntime:
         reg.register('browser_verify',lambda url_contains=None,title_contains=None,selector_exists=None,text_contains=None:br().verify(url_contains,title_contains,selector_exists,text_contains),'Sayfayı doğrular.',{'type':'object','properties':{'url_contains':{'type':'string'},'title_contains':{'type':'string'},'selector_exists':{'type':'string'},'text_contains':{'type':'string'}},'required':[]})
         reg.register('browser_click',lambda selector:br().click(selector),'Elemente tıklar; onay gerekir.',{'type':'object','properties':{'selector':{'type':'string'}},'required':['selector']},dangerous=True)
         reg.register('browser_type',lambda selector,text,press_enter=False:br().type(selector,text,press_enter),'Alanı doldurur; onay gerekir.',{'type':'object','properties':{'selector':{'type':'string'},'text':{'type':'string'},'press_enter':{'type':'boolean'}},'required':['selector','text']},dangerous=True)
-        reg.register('browser_select',lambda selector,value:br().select(selector,value),'Dropdown seçer; onay gerekir.',{'type':'object','properties':{'selector':{'type':'string'},'value':{'type':'string'}},'required':['selector','value']},dangerous=True)
+        reg.register('browser_select',lambda selector,value:br().select(selector,value),'Dropdown seçer; onay gerekir.',{'type':'object','properties':{'selector':{'type':'string'},'value':{'type':'string'}},'required':['selector']},dangerous=True)
         from app.tools.system_tools import process_list,process_info,process_kill,system_settings_view
         reg.register('process_list',lambda sort='cpu',limit=30,name=None:process_list(sort,limit,name),'Süreç listeler.')
         reg.register('process_info',lambda pid:process_info(pid),'Süreç detayı.',{'type':'object','properties':{'pid':{'type':'number'}},'required':['pid']})
