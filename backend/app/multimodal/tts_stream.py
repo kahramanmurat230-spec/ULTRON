@@ -1,8 +1,8 @@
-"""WAVE 4 — Streaming TTS (§3).
+"""Local streaming TTS adapter.
 
-Mevcut Neural TTS (app/voice/tts.py — edge-tts) KORUNUR; bu katman onu
-streaming hattına bağlar: cümle/chunk sentezi, kuyruk, cache, iptal,
-barge-in, latency ölçümü, voice/language seçimi, hata kurtarma.
+Connects the existing app/voice/tts.py local TTS wrapper to the streaming
+pipeline: sentence/chunk synthesis, cache, cancellation, barge-in, latency
+metrics, voice/language selection and honest unavailable errors.
 """
 from __future__ import annotations
 
@@ -12,13 +12,11 @@ import re
 import time
 from collections import OrderedDict
 
-# Cümle sınırlayıcılar (TR/EN ortak) — kısa parçalar anında konuşulur
 _SENT_SPLIT = re.compile(r"(?<=[.!?…;:])\s+")
 
 
 def split_sentences(text: str, max_len: int = 220) -> list[str]:
-    """Metni konuşılabilir parçalara böler (streaming ilk ses gecikmesini
-    düşürür). Uzun cümleler max_len'den kırılır."""
+    """Metni konuşılabilir parçalara böler."""
     text = " ".join((text or "").strip().split())
     if not text:
         return []
@@ -40,40 +38,48 @@ class TTSUnavailable(RuntimeError):
 
 
 class NeuralTTSEngine:
-    """Mevcut app/voice/tts.py sarlayıcısı (DEĞİŞTİRİLMEDEN)."""
+    """Backward-compatible streaming adapter over the local TTS wrapper."""
 
-    NAME = "edge-tts-neural"
+    NAME = "local-tts"
 
     def __init__(self, tts=None, settings=None):
         if tts is None:
             from app.voice.tts import TextToSpeech
             tts = TextToSpeech(settings)
         self.tts = tts
-        self.available = True
         self.error = None
+        try:
+            self.available = self.tts.backend() is not None
+        except Exception as exc:  # noqa: BLE001
+            self.available = False
+            self.error = str(exc)[:200]
 
     async def synthesize(self, text: str, *, voice=None,
                          language=None) -> tuple[bytes, str]:
         if voice:
             self.tts.voice = voice
         try:
-            return await self.tts.synthesize(text)
+            result = await self.tts.synthesize(text)
+            self.available = True
+            return result
         except Exception as exc:  # noqa: BLE001
+            self.available = False if self.tts.backend() is None else self.available
             self.error = str(exc)[:200]
             raise
 
     def status(self) -> dict:
-        return {"engine": self.NAME, "available": self.available,
-                "backend": self.tts.backend(), "voice": self.tts.voice,
+        try:
+            backend = self.tts.backend()
+        except Exception as exc:  # noqa: BLE001
+            backend = None
+            self.error = str(exc)[:200]
+        return {"engine": self.NAME, "available": backend is not None,
+                "backend": backend, "voice": self.tts.voice,
                 "error": self.error}
 
 
 class StreamingTTS:
-    """Cümle bazlı streaming sentez + kuyruk + cache + iptal.
-
-    speak_stream(chunk_iter): brain'den metin aktıkça cümle tamamlanır
-    tamamlanmaz sentezlenir — tüm cevabin bitmesi BEKLENMEZ.
-    """
+    """Cümle bazlı streaming sentez + cache + iptal."""
 
     def __init__(self, engine: NeuralTTSEngine | None = None,
                  *, cache_limit: int = 64, voice: str | None = None,
@@ -81,7 +87,7 @@ class StreamingTTS:
         self.engine = engine or NeuralTTSEngine()
         self.voice = voice
         self.language = language
-        self.cache: OrderedDict[tuple, bytes] = OrderedDict()
+        self.cache: OrderedDict[tuple, tuple[bytes, str]] = OrderedDict()
         self.cache_limit = cache_limit
         self.cancelled = asyncio.Event()
         self.metrics = {"first_audio_ms": None, "complete_ms": None,
@@ -93,27 +99,25 @@ class StreamingTTS:
         return {"engine": self.engine.status(), "language": self.language,
                 "voice": self.voice, "cache_size": len(self.cache)}
 
-    # ------------------------------------------------------------ cache
     def _cache_key(self, text: str) -> tuple:
         return (hashlib.sha1(text.encode("utf-8")).hexdigest()[:16],
                 self.voice or getattr(self.engine.tts, "voice", ""),
                 self.language)
 
-    def _cache_get(self, text: str) -> bytes | None:
+    def _cache_get(self, text: str) -> tuple[bytes, str] | None:
         key = self._cache_key(text)
         if key in self.cache:
             self.cache.move_to_end(key)
             return self.cache[key]
         return None
 
-    def _cache_put(self, text: str, audio: bytes) -> None:
+    def _cache_put(self, text: str, audio: bytes, fmt: str) -> None:
         key = self._cache_key(text)
-        self.cache[key] = audio
+        self.cache[key] = (audio, fmt)
         self.cache.move_to_end(key)
         while len(self.cache) > self.cache_limit:
             self.cache.popitem(last=False)
 
-    # ------------------------------------------------------------ control
     def reset(self) -> None:
         self.cancelled = asyncio.Event()
         self._buf = ""
@@ -121,17 +125,12 @@ class StreamingTTS:
                         "synthesized": 0, "cache_hits": 0, "cancelled": 0}
 
     def cancel(self) -> dict:
-        """Barge-in: sentez anında durur, kuyruk boşalır."""
         self.cancelled.set()
         self.metrics["cancelled"] += 1
         return {"type": "tts.cancelled"}
 
-    # ------------------------------------------------------------ akış
     async def speak_stream(self, chunk_iter):
-        """Metin akışını yiyip ses chunk'ları üretir (async generator).
-
-        Yield: {"audio": bytes, "fmt": str, "text": cümle, "cached": bool}
-        """
+        """Metin akışını yiyip ses chunk'ları üretir."""
         t0 = self._now()
         self._buf = ""
         got_any = False
@@ -139,7 +138,6 @@ class StreamingTTS:
         while not done:
             if self.cancelled.is_set():
                 return
-            # sonraki chunk'ı al (veya akış bitti)
             nxt = None
             if hasattr(chunk_iter, "__aiter__"):
                 try:
@@ -154,12 +152,11 @@ class StreamingTTS:
             if nxt is not None:
                 nxt = str(nxt)
                 if self._buf and not self._buf.endswith((" ", "\n", "\t")):
-                    self._buf += " "          # chunk sınırı cümle böler
+                    self._buf += " "
                 self._buf += nxt
-            # tamamlanmış cümleleri sentezle (akış bitmemiş olsa bile)
             sentences = split_sentences(self._buf)
             if not done and sentences:
-                sentences = sentences[:-1]   # son parça yarım olabilir
+                sentences = sentences[:-1]
             if done and self._buf.strip() and not sentences:
                 sentences = [self._buf.strip()]
             for sent in sentences:
@@ -169,13 +166,12 @@ class StreamingTTS:
                     continue
                 cached = self._cache_get(sent)
                 if cached is not None:
+                    audio, fmt = cached
                     self.metrics["cache_hits"] += 1
-                    audio, fmt = cached, "mp3"
                 else:
                     audio, fmt = await self._synthesize_with_retry(sent)
-                    self._cache_put(sent, audio)
+                    self._cache_put(sent, audio, fmt)
                     self.metrics["synthesized"] += 1
-                # işlenen cümle buffer'dan DÜŞÜRÜLÜR (tekrar konuşma YOK)
                 idx = self._buf.find(sent)
                 if idx >= 0:
                     self._buf = self._buf[idx + len(sent):].lstrip()
@@ -191,7 +187,7 @@ class StreamingTTS:
     async def _synthesize_with_retry(self, text: str) -> tuple[bytes, str]:
         """Hata kurtarma: 1 yeniden deneme; sonra dürüst TTSUnavailable."""
         last = None
-        for attempt in (1, 2):
+        for _attempt in (1, 2):
             if self.cancelled.is_set():
                 raise asyncio.CancelledError()
             try:
