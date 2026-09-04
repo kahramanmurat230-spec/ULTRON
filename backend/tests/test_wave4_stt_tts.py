@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.multimodal.stt_stream import (  # noqa: E402
-    STTEvent, STTManager, STTManagerConfig, STTUnavailable, VoskEngine,
+    STTEvent, STTManager, STTManagerConfig, VoskEngine,
     WhisperEngine,
 )
 from app.multimodal.tts_stream import (  # noqa: E402
@@ -16,7 +16,6 @@ from app.multimodal.tts_stream import (  # noqa: E402
 )
 
 
-# ---------------------------------------------------------------- STT
 def _loud(n=480, amp=11000):
     import array
     return (array.array("h", [amp if i % 2 else -amp
@@ -28,9 +27,7 @@ def _silent(n=480):
 
 
 class FakeRealEngine:
-    """DI seam: gerçek engine'in stream sözleşmesini taklit eden test
-    kancası (sistemde faster_whisper yerine geçer; transcript'i TEST
-    verir, produksiyonda asla taklit edilmez)."""
+    """DI seam: gerçek engine'in stream sözleşmesini taklit eden test kancası."""
 
     NAME = "test-engine"
 
@@ -50,7 +47,6 @@ class FakeRealEngine:
 
 def test_real_engines_honestly_unavailable_here():
     w, v = WhisperEngine(), VoskEngine()
-    # bu ortamda gerçek binary yok → available False + açık sebep
     assert w.available is False and "kurulu" in w.error
     assert v.available is False
     m = STTManager()
@@ -59,11 +55,10 @@ def test_real_engines_honestly_unavailable_here():
 
 def test_stt_unavailable_never_fakes_transcript():
     m = STTManager(engines=[WhisperEngine()])
-    speech = [_loud()]
-    out = asyncio.run(m.transcribe(speech))
+    out = asyncio.run(m.transcribe([_loud()]))
     kinds = [e.kind for e in out]
     assert "final" not in kinds and "error" in kinds
-    assert all(not e.text for e in out)     # uydurma metin YOK
+    assert all(not e.text for e in out)
 
 
 def test_stt_noise_only_returns_ended_no_stt_call():
@@ -76,7 +71,7 @@ def test_stt_noise_only_returns_ended_no_stt_call():
 
     m = STTManager(engines=[Probe([])])
     out = asyncio.run(m.transcribe([_silent(), _silent()]))
-    assert out[-1].kind == "end" and calls == []   # sessizlik STT'e gitmedi
+    assert out[-1].kind == "end" and calls == []
 
 
 def test_stt_partial_then_final_with_metadata():
@@ -97,20 +92,17 @@ def test_stt_partial_then_final_with_metadata():
 
 def test_stt_retry_then_success():
     evs = [STTEvent(kind="final", text="tekrar tamam", confidence=0.9)]
-    eng = FakeRealEngine(evs, fail_first=1)      # ilk deneme çöker
+    eng = FakeRealEngine(evs, fail_first=1)
     m = STTManager(engines=[eng])
     out = asyncio.run(m.transcribe([_loud()]))
-    assert eng.calls == 2                          # retry gerçek
+    assert eng.calls == 2
     assert out[-1].kind == "final"
 
 
 def test_stt_fallback_to_second_engine():
-    bad = FakeRealEngine([STTEvent(kind="final", text="x")],
-                         fail_first=99)            # hep çöker
-    good = FakeRealEngine([STTEvent(kind="final", text="yedek ok",
-                                    confidence=0.8)])
-    m = STTManager(engines=[bad, good],
-                   config=STTManagerConfig(retry_limit=1))
+    bad = FakeRealEngine([STTEvent(kind="final", text="x")], fail_first=99)
+    good = FakeRealEngine([STTEvent(kind="final", text="yedek ok", confidence=0.8)])
+    m = STTManager(engines=[bad, good], config=STTManagerConfig(retry_limit=1))
     out = asyncio.run(m.transcribe([_loud()]))
     assert out[-1].kind == "final" and out[-1].text == "yedek ok"
 
@@ -118,14 +110,12 @@ def test_stt_fallback_to_second_engine():
 def test_stt_retry_limit_not_infinite():
     bad = FakeRealEngine([], fail_first=99)
     m = STTManager(engines=[bad], config=STTManagerConfig(retry_limit=2))
-    t0 = asyncio.run(m.transcribe([_loud()]))
-    assert bad.calls == 3                          # 1 + retry_limit(2) — durdu
-    assert t0[-1].kind == "error"
+    out = asyncio.run(m.transcribe([_loud()]))
+    assert bad.calls == 3
+    assert out[-1].kind == "error"
 
 
 def test_stt_cancellation_propagates():
-    import array as _arr
-
     class Slow(FakeRealEngine):
         async def stream(self, speech, language):
             await asyncio.sleep(5)
@@ -143,27 +133,27 @@ def test_stt_cancellation_propagates():
     asyncio.run(scenario())
 
 
-# ---------------------------------------------------------------- splitter
 def test_split_sentences_basic():
     assert split_sentences("Bir. İki! Üç?") == ["Bir.", "İki!", "Üç?"]
-    parts = split_sentences("A" * 500)              # uzun satır kırılır
+    parts = split_sentences("A" * 500)
     assert all(len(p) <= 220 for p in parts) and "".join(parts).count("A") == 500
     assert split_sentences("") == []
     assert split_sentences("   ") == []
 
 
-# ---------------------------------------------------------------- TTS engine
-def test_neural_engine_real_status_honest():
-    eng = NeuralTTSEngine()                          # gerçek edge-tts sarmalayıcı
+def test_local_engine_status_is_honest():
+    eng = NeuralTTSEngine()
     st = eng.status()
-    assert st["backend"] == "edge-tts-neural"        # kütüphane kurulu
-    with pytest.raises(Exception):                   # ağ yok → dürüst hata
-        asyncio.run(eng.synthesize("test cümlesi."))
+    assert st["engine"] == "local-tts"
+    assert st["backend"] in (None, "piper-local", "espeak-ng-local")
+    assert st["available"] is (st["backend"] is not None)
+    if st["backend"] is None:
+        with pytest.raises(Exception):
+            asyncio.run(eng.synthesize("test cümlesi."))
 
 
 class DictationEngine(NeuralTTSEngine):
-    """Test kancası: sentez çağrılarını kaydeder, gerçek ses baytı üretir
-    (produksiyon engine'i asla taklit edilmez; burada hat/zincir testi)."""
+    """Test kancası; gerçek üretim engine'inin DI sözleşmesini sınar."""
 
     NAME = "dictation"
 
@@ -200,19 +190,18 @@ def test_tts_streaming_sentence_by_sentence():
         async for piece in tts.speak_stream(iter(chunks)):
             out.append(piece)
             if len(out) == 1:
-                # ilk cümle akış BİTMEDEN konuşuldu (streaming kanıtı)
                 assert "Üç" not in eng.tts.calls[0]
         return out
 
     got = asyncio.run(run())
     texts = [g["text"] for g in got]
-    assert texts[0] == "Ekranı okuyorum."          # cümle tamamlanınca ses
+    assert texts[0] == "Ekranı okuyorum."
     assert got[0]["audio"] == "AUDIO::Ekranı okuyorum.".encode("utf-8")
     assert tts.metrics["first_audio_ms"] is not None
     assert tts.metrics["synthesized"] >= 2
 
 
-def test_tts_cache_second_hit_no_resynth():
+def test_tts_cache_second_hit_no_resynth_and_preserves_format():
     eng = DictationEngine()
     tts = StreamingTTS(engine=eng)
 
@@ -226,6 +215,7 @@ def test_tts_cache_second_hit_no_resynth():
     out = asyncio.run(twice())
     assert len(out) == 2
     assert out[0]["cached"] is False and out[1]["cached"] is True
+    assert out[0]["fmt"] == out[1]["fmt"] == "mp3"
     assert tts.metrics["cache_hits"] == 1
 
 
@@ -235,21 +225,20 @@ def test_tts_cancel_stops_mid_stream():
     produced = []
 
     async def run():
-        gen = tts.speak_stream(iter(["Bir.", "İki.", "Üç.", "Dört.",
-                                     "Beş."]))
+        gen = tts.speak_stream(iter(["Bir.", "İki.", "Üç.", "Dört.", "Beş."]))
         async for p in gen:
             produced.append(p["text"])
             if len(produced) == 2:
-                tts.cancel()                        # barge-in
+                tts.cancel()
         return produced
 
     out = asyncio.run(run())
-    assert len(out) <= 3                            # kalanlar üretilmedi
+    assert len(out) <= 3
     assert tts.metrics["cancelled"] == 1
 
 
 def test_tts_error_recovery_retry_then_honest_failure():
-    eng = DictationEngine(fail_times=1)             # ilk sentez hatası
+    eng = DictationEngine(fail_times=1)
     tts = StreamingTTS(engine=eng)
     out = []
 
@@ -257,10 +246,10 @@ def test_tts_error_recovery_retry_then_honest_failure():
         async for p in tts.speak_stream(iter(["Tek cümle."])):
             out.append(p)
 
-    asyncio.run(run())                              # retry ile kurtuldu
+    asyncio.run(run())
     assert out and out[0]["audio"]
 
-    eng2 = DictationEngine(fail_times=99)           # hep hata
+    eng2 = DictationEngine(fail_times=99)
     tts2 = StreamingTTS(engine=eng2)
 
     async def fail():
@@ -268,7 +257,7 @@ def test_tts_error_recovery_retry_then_honest_failure():
             pass
 
     with pytest.raises(TTSUnavailable):
-        asyncio.run(fail())                         # sahte ses YOK
+        asyncio.run(fail())
 
 
 def test_tts_status_reports_engine_and_cache():
