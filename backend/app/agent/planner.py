@@ -24,9 +24,12 @@ class Planner:
             raise ValueError("Plan JSON bozuk.") from exc
 
     def _tool_capability(self, tool):
-        item = self.registry.get(tool) or {}
-        fn = item.get("fn")
-        return callable(fn), bool(item.get("dangerous"))
+        getter = getattr(self.registry, "get", None)
+        if callable(getter):
+            item = getter(tool) or {}
+            fn = item.get("fn")
+            return callable(fn), bool(item.get("dangerous"))
+        return True, False
 
     def validate_plan(self, plan, goal=None):
         if not isinstance(plan, dict):
