@@ -1,49 +1,21 @@
-# Level 36 — Adaptive Agent Loop
+# Level 36 — Increment 2
 
-## Contract
+## Production Supervisor integration
 
-ULTRON's adaptive execution path is bounded and verification-first:
+`AdaptiveSupervisorAdapter` now connects the bounded adaptive loop to the existing `SupervisorOrchestrator.execute()` path.
 
-`Plan → capability check → approval check → Execute → Verify → Replan`
+Flow:
 
-Execution success is **not** task success. A task reaches `SUCCEEDED` only when
-its verifier explicitly accepts the observed result.
+`Plan → capability check → approval check → Supervisor/Scheduler Execute → report verification → bounded Replan`
 
-## Safety invariants
+### Guarantees
 
-- Capability is re-checked immediately before every execution attempt.
-- Approval is re-checked immediately before every execution attempt.
-- Replanning is bounded (`max_replans`).
-- Total attempts are bounded (`max_attempts`).
-- Executor exceptions become explicit failed observations.
-- Non-object executor results are failures, never successes.
-- Failed verification cannot be converted into success.
-- No tool is invoked directly by the adaptive loop; existing Supervisor,
-  permission, risk, approval and sandbox layers remain authoritative.
-- Every execution/replan/stop transition can be sent to the existing audit path.
+- Every attempt re-checks capability and approval immediately before execution.
+- Each replan rebuilds workers and executors, preventing reuse of a stale DAG.
+- Supervisor, scheduler, capability tokens, approval, artifacts and judge remain authoritative.
+- Executor/report failure is never converted into success.
+- Verification is mandatory before `SUCCEEDED`.
+- Replans and attempts are hard bounded by `AdaptiveLimits`.
+- Audit callbacks receive adaptive-loop transitions.
 
-## Current integration boundary
-
-The first Level 36 implementation is a small callback-based coordination layer
-(`backend/app/agent/adaptive_loop.py`). This keeps the existing Supervisor
-Orchestrator and security core stable while establishing a tested contract.
-The next increment will connect this contract to the production Supervisor
-execution path and its existing verification/result pipeline.
-
-## Expected lifecycle
-
-```text
-PLAN
-  ↓
-CAPABILITY CHECK
-  ↓
-APPROVAL CHECK
-  ↓
-EXECUTE
-  ↓
-OBSERVE RESULT
-  ↓
-VERIFY
- ├── PASS → SUCCEEDED
- └── FAIL → REPLAN (bounded) → checks → EXECUTE
-```
+This increment is an adapter, not a replacement for the production orchestration pipeline. Existing security boundaries remain unchanged.
