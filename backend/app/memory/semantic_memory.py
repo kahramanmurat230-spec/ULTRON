@@ -1,6 +1,6 @@
 import re
+import math
 from collections import Counter
-
 
 class SemanticMemory:
     """Lightweight local semantic retrieval without an external vector DB.
