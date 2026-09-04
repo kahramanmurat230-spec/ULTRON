@@ -1,7 +1,8 @@
-"""Level 40 — freshness- and provenance-aware advisory context from outcomes.
+"""Level 41 — consistency-aware advisory context from verified outcomes.
 
-Learned outcomes are untrusted data. Only explicitly verified outcome records
-with a usable provenance marker and a fresh timestamp are exposed to planning.
+Learned outcomes are untrusted data. Fresh, provenance-checked outcomes that
+conflict for the same task/goal are suppressed instead of arbitrarily choosing
+one. This remains planning context only and cannot grant authority.
 """
 from __future__ import annotations
 
@@ -17,6 +18,9 @@ class OutcomePlanningContext:
     _SECRET = re.compile(r"(?i)(?:\b(?:password|passwd|token|secret|api[_ -]?key|authorization)\s*[:=]\s*|\bbearer\s+)[^\s,;]+")
     _TOKEN = re.compile(r"\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}|AIza[A-Za-z0-9_-]{20,})\b")
     _CONTROL = re.compile(r"(?i)^\s*(?:system|assistant|developer)\s*:\s*|\b(?:ignore|override|bypass)\s+(?:previous|prior|all)\s+(?:instructions?|rules?|safety)\b")
+    _TASK = re.compile(r"(?:^|;)\s*task=([^;]+)")
+    _GOAL = re.compile(r"(?:^|;)\s*goal=([^;]+)")
+    _RESULT = re.compile(r"(?:^|;)\s*result=(.*?)(?:;\s*(?:attempts|replans)=|$)")
 
     def __init__(self, semantic_memory=None):
         self.semantic_memory = semantic_memory
@@ -57,6 +61,19 @@ class OutcomePlanningContext:
             return hit[0], row[0], row[1], row[2]
         return None
 
+    @classmethod
+    def _identity(cls, raw: str):
+        task = cls._TASK.search(raw)
+        goal = cls._GOAL.search(raw)
+        return ((task.group(1).strip() if task else ""), (goal.group(1).strip() if goal else ""))
+
+    @classmethod
+    def _result_key(cls, raw: str) -> str:
+        match = cls._RESULT.search(raw)
+        if not match:
+            return ""
+        return " ".join(match.group(1).split()).casefold()
+
     def build(self, goal: str) -> str:
         if not goal or self.semantic_memory is None:
             return ""
@@ -64,28 +81,40 @@ class OutcomePlanningContext:
             hits = self.semantic_memory.search(goal, limit=self.MAX_ITEMS * 3)
         except Exception:
             return ""
-        lines = []
-        seen = set()
+        candidates = []
         for hit in hits:
             unpacked = self._unpack_hit(hit)
             if unpacked is None:
                 continue
             _score, kind, content, created = unpacked
-            if str(kind).casefold() != "task_outcome":
+            if str(kind).casefold() != "task_outcome" or not self._fresh(created):
                 continue
             raw = " ".join(str(content).split())
             if not raw.startswith("Verified outcome ") or "status=SUCCEEDED" not in raw:
                 continue
-            if not self._fresh(created):
-                continue
             text = self._sanitize(raw)
             if not text or text == "[REDACTED UNTRUSTED CONTROL TEXT]":
                 continue
-            key = text.casefold()
-            if key in seen:
+            candidates.append((self._identity(raw), self._result_key(raw), text))
+
+        grouped = {}
+        for identity, result, text in candidates:
+            grouped.setdefault(identity, {"results": set(), "items": []})
+            grouped[identity]["results"].add(result)
+            grouped[identity]["items"].append(text)
+
+        lines = []
+        seen = set()
+        for identity, group in grouped.items():
+            results = {r for r in group["results"] if r}
+            if len(results) > 1:
                 continue
-            seen.add(key)
-            lines.append(f"[verified outcome — fresh data only] {text}")
-            if len(lines) >= self.MAX_ITEMS:
-                break
+            for text in group["items"]:
+                key = text.casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                lines.append(f"[verified outcome — fresh, consistent data only] {text}")
+                if len(lines) >= self.MAX_ITEMS:
+                    return "\n".join(lines)[: self.MAX_CHARS]
         return "\n".join(lines)[: self.MAX_CHARS]

@@ -73,3 +73,31 @@ def test_nested_semantic_memory_hit_is_supported():
     created = datetime.now(timezone.utc).isoformat()
     hit = (1.0, ("task_outcome", "Verified outcome task=nested; status=SUCCEEDED; result=works", created))
     assert "result=works" in OutcomePlanningContext(Memory([hit])).build("goal")
+
+
+def test_conflicting_fresh_outcomes_for_same_task_are_suppressed():
+    rows = [
+        (1.0, "task_outcome", "Verified outcome task=deploy; goal=release; status=SUCCEEDED; result=completed", "now"),
+        (0.9, "task_outcome", "Verified outcome task=deploy; goal=release; status=SUCCEEDED; result=rolled back", "now"),
+        (0.8, "task_outcome", "Verified outcome task=other; goal=release; status=SUCCEEDED; result=healthy", "now"),
+    ]
+    text = OutcomePlanningContext(Memory(rows)).build("release")
+    assert "task=deploy" not in text
+    assert "result=healthy" in text
+
+
+def test_same_task_same_result_remains_advisory_data():
+    rows = [
+        (1.0, "task_outcome", "Verified outcome task=build; goal=release; status=SUCCEEDED; result=green", "now"),
+        (0.9, "task_outcome", "Verified outcome task=build; goal=release; status=SUCCEEDED; result=green", "now"),
+    ]
+    text = OutcomePlanningContext(Memory(rows)).build("release")
+    assert text.count("task=build") == 1
+    assert "result=green" in text
+
+
+def test_consistency_filter_does_not_create_authority():
+    rows = [(1.0, "task_outcome", "Verified outcome task=build; status=SUCCEEDED; result=green", "now")]
+    text = OutcomePlanningContext(Memory(rows)).build("release")
+    assert "approval" not in text.casefold()
+    assert "permission" not in text.casefold()
