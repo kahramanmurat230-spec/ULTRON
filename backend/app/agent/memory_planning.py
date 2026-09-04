@@ -13,7 +13,7 @@ class MemoryPlanningContext:
     MAX_ITEMS = 6
     MAX_CHARS = 3000
 
-    def __init__(self, semantic_memory):
+    def __init__(self, semantic_memory=None):
         self.semantic_memory = semantic_memory
 
     def build(self, goal: str) -> str:
