@@ -17,14 +17,18 @@
   },
   "voice": {
     "stt_model": "small",
-    "tts": "edge-tts-neural",
-    "neural_voice": "tr-TR-AhmetNeural",
-    "rate": "-6%",
-    "pitch": "-8Hz",
+    "tts": "piper-local",
+    "piper_voice": "tr",
+    "piper_model": "data/voice/piper/tr_TR-ahmet-medium.onnx",
+    "piper_executable": "piper",
+    "espeak_voice": "tr",
+    "espeak_executable": "espeak-ng",
+    "rate": "1.0",
+    "pitch": "0",
     "sample_rate": 16000,
     "listen_seconds": 8,
     "live_mode": false,
-    "volume": "+0%"
+    "volume": "1.0"
   },
   "security": {
     "require_confirmation_for": [
