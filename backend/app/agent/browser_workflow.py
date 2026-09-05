@@ -20,9 +20,18 @@ def parse_browser_plan(text: str) -> list[dict]:
             m = re.search(r"^(https?://\S+|[\w.-]+\.[a-z]{2,}(?:/\S*)?)\s*(?:git|aç|ac)$", low, re.I)
         if m:
             steps.append({"label":"browser navigate","tool":"browser_navigate","args":{"url":m.group(1)}}); continue
-        m = re.search(r"(?:google'?da|web'de|internette)\s+(.+?)\s+(?:ara|araştır|arastir)$", c, re.I)
+        m = re.search(r"(?:google'?da|web'de|internette)\s+['\"](.+?)['\"]\s+(?:kelimesini|kelimelerini)?\s*(?:ara|araştır|arastir)\b", c, re.I)
+        if not m:
+            m = re.search(r"(?:google'?da|web'de|internette)\s+(.+?)\s+(?:kelimesini|kelimelerini)?\s*(?:ara|araştır|arastir)\b", c, re.I)
         if m:
-            q=m.group(1).strip(); steps.append({"label":f"browser search: {q}","tool":"browser_navigate","args":{"url":"https://www.google.com/search?q="+quote_plus(q)}}); continue
+            q=m.group(1).strip(" .\"'")
+            steps.append({"label":f"browser search: {q}","tool":"browser_navigate","args":{"url":"https://www.google.com/search?q="+quote_plus(q)}})
+            remainder=c[m.end():].strip(" .")
+            for sentence in re.split(r"[.!?]\s*", remainder):
+                if re.search(r"(?:sayfayı|sayfayi|sayfanın|sayfanin|sonuçları|sonuclari|sonucu).*?(?:oku|okuy|göster|goster)", sentence, re.I):
+                    steps.append({"label":"browser read page","tool":"browser_read","args":{"limit":5000}})
+                    break
+            continue
         if re.search(r"(?:sayfayı|sayfayi|sayfanın|sayfanin|sonuçları|sonuclari|sonucu)\s+(?:oku|okuy|oku ve göster|göster|goster)$", low):
             steps.append({"label":"browser read page","tool":"browser_read","args":{"limit":5000}}); continue
         m = re.search(r"(?:css|selector)\s+['\"]?([^'\"]+)['\"]?\s+(?:tıkla|tikla)$", c, re.I)
