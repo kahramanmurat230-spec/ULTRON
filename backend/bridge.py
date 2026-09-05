@@ -302,7 +302,7 @@ class UltronBridge:
                 pyautogui.click(x, y)
                 return [x, y]
             px = await asyncio.to_thread(_click)
-        except Exception as exc:  # noqa: BLE001
+        except (Exception, SystemExit) as exc:  # noqa: BLE001
             await agent.set_state("ERROR", f"CLICK failed: {exc}")
             await agent._schedule_idle()
             return True

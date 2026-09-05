@@ -31,6 +31,11 @@ class GUIAutomation:
     def _pyautogui(self):
         try: import pyautogui; return pyautogui
         except ImportError as e: raise RuntimeError('GUI otomasyonu için pyautogui kurulmalı.') from e
+        except SystemExit as e:
+            # mouseinfo (a pyautogui dependency) calls sys.exit() instead of
+            # raising when tkinter is missing, even with a display present.
+            # Surface this as an honest RuntimeError, not a process crash.
+            raise RuntimeError('GUI otomasyonu için pyautogui kurulmalı.') from e
     def click(self,x,y): p=self._pyautogui(); p.click(int(x),int(y)); return {'clicked':[int(x),int(y)]}
     def double_click(self,x,y): p=self._pyautogui(); p.doubleClick(int(x),int(y)); return {'double_clicked':[int(x),int(y)]}
     def right_click(self,x,y): p=self._pyautogui(); p.rightClick(int(x),int(y)); return {'right_clicked':[int(x),int(y)]}

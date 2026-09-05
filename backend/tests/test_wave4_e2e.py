@@ -308,6 +308,12 @@ def _importable(mod):
         return True
     except Exception:  # noqa: BLE001
         return False
+    except SystemExit:
+        # Some optional deps (e.g. pyautogui's mouseinfo) call sys.exit()
+        # instead of raising when a system lib (tkinter) is missing, even
+        # with a display present. Treat that as "not importable", never as
+        # a process-crashing failure.
+        return False
 
 
 # ------------------------------------------------------------ regression
