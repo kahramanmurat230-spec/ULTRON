@@ -11,14 +11,12 @@ def test_degraded_runtime_has_sqlite_memory(tmp_path):
     runtime.shutdown()
 
 
-def test_bridge_guard_preserves_unavailable_status(monkeypatch):
+def test_bridge_guard_preserves_unavailable_status():
     from app.core.runtime_degradation import install_bridge_guard
     from bridge import UltronBridge
 
-    original = UltronBridge.__getattribute__
     install_bridge_guard()
-    assert UltronBridge._degraded_runtime_guard is True
-    # The guard must not turn a failed V16 runtime into a false "available" state.
-    assert not UltronBridge.available.fget
-    # Restore the method for isolation if another test constructs a bridge.
-    monkeypatch.setattr(UltronBridge, "__getattribute__", original, raising=False)
+    bridge = object.__new__(UltronBridge)
+    object.__setattr__(bridge, "runtime", None)
+    assert bridge.available is False
+    assert bridge.runtime.memory.count() >= 0
