@@ -32,13 +32,6 @@ def _looks_like_work(text):
 
 def _deterministic_plan(text):
     try:
-        from app.agent.browser_workflow import parse_browser_plan, as_hybrid_plan
-        browser_plan = as_hybrid_plan(parse_browser_plan(text), text)
-        if browser_plan is not None:
-            return browser_plan
-    except Exception:
-        pass
-    try:
         from app.agent.orchestrator import parse_plan
         raw = parse_plan(text)
     except Exception:
