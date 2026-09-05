@@ -1,0 +1,4 @@
+{
+  "model": null,
+  "note": "Set \"model\" to a .glb filename placed in this folder (e.g. \"ultron.glb\") to replace the procedural avatar. The loader understands: a node named *head* (head rotation), nodes/materials named *eye* (emissive drive), morph targets or a node named *jaw*/*mouth* (lip-sync), and plays the first animation clip via AnimationMixer."
+}
