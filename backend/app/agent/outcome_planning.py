@@ -81,14 +81,14 @@ class OutcomePlanningContext:
         """Return a bounded ranking score; never an authorization decision."""
         score = 50
         if duplicate_count > 1:
-            score += min(20, (duplicate_count - 1) * 20)
+            score += 20
         attempts = cls._ATTEMPTS.search(raw)
         replans = cls._REPLANS.search(raw)
-        if attempts:
-            score += 10 if int(attempts.group(1)) <= 2 else 0
-        if replans:
-            score += 10 if int(replans.group(1)) == 0 else 0
-        return max(0, min(100, score))
+        if attempts and int(attempts.group(1)) <= 2:
+            score += 10
+        if replans and int(replans.group(1)) == 0:
+            score += 10
+        return max(0, min(70, score))
 
     def build(self, goal: str) -> str:
         if not goal or self.semantic_memory is None:
@@ -115,14 +115,15 @@ class OutcomePlanningContext:
 
         grouped = {}
         for identity, result, raw, text in candidates:
-            grouped.setdefault(identity, {"results": set(), "items": []})
-            grouped[identity]["results"].add(result)
-            grouped[identity]["items"].append((raw, text))
+            group_key = identity if any(identity) else ("__anonymous__", result, text.casefold())
+            grouped.setdefault(group_key, {"identity": identity, "results": set(), "items": []})
+            grouped[group_key]["results"].add(result)
+            grouped[group_key]["items"].append((raw, text))
 
         ranked = []
-        for identity, group in grouped.items():
+        for group in grouped.values():
             results = {r for r in group["results"] if r}
-            if len(results) > 1:
+            if any(group["identity"]) and len(results) > 1:
                 continue
             duplicate_count = len(group["items"])
             for raw, text in group["items"]:
