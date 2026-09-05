@@ -6,12 +6,6 @@ import sys
 import urllib.request
 from pathlib import Path
 
-# server.py imports this module before constructing its global Hub. Install the
-# runtime guard at that point so a failed optional V16 boot cannot crash V15.
-from app.core.runtime_degradation import install_bridge_guard
-
-install_bridge_guard()
-
 BASE = Path(__file__).resolve().parent
 ROOT = BASE.parent
 FRONTEND = ROOT / "frontend"
@@ -35,6 +29,12 @@ async def _run(name: str, argv: list, cwd: Path, timeout: int, emit) -> dict:
 
 
 async def run_all(emit, quick: bool = False) -> list:
+    # Install only after the bridge has finished importing. Importing the guard
+    # from module scope created a bridge -> test_runner -> guard -> bridge cycle
+    # during server startup and made ``UltronBridge`` unavailable.
+    from app.core.runtime_degradation import install_bridge_guard
+    install_bridge_guard()
+
     results = []
     results.append(await _run("TypeScript", ["npx", "tsc", "--noEmit"], FRONTEND, 240, emit))
     if not quick:
@@ -50,8 +50,6 @@ async def run_all(emit, quick: bool = False) -> list:
     async def http_check(name: str, url: str, expect) -> None:
         await emit(name, "RUNNING", "")
         try:
-            # run in a thread: a blocking urlopen on the event loop would
-            # deadlock the very server we are testing
             await asyncio.to_thread(_http, url, expect)
             ok, detail = True, ""
         except Exception as e:  # noqa: BLE001
@@ -64,7 +62,6 @@ async def run_all(emit, quick: bool = False) -> list:
     await http_check("Memory", "http://127.0.0.1:8000/api/memory", lambda d: "session_count" in d)
     await http_check("Telemetry", "http://127.0.0.1:8000/api/system", lambda d: d.get("ram", {}).get("percent") is not None)
 
-    # websocket hello
     await emit("WebSocket", "RUNNING", "")
     try:
         import aiohttp
