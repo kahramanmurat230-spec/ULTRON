@@ -343,7 +343,7 @@ function VoiceTab({ onArm, onDisarm }: { onArm: () => void; onDisarm: () => void
           {ttsSpeaking ? "SPEAKING" : ttsMode.toUpperCase()}
         </div>
         <div className="dim mono" style={{ fontSize: 8.5, marginTop: 4, lineHeight: 1.6 }}>
-          Engine: Microsoft Edge Neural TTS. Amplitude drives avatar lip-sync.
+          Engine: local backend TTS (Piper / eSpeak-ng, no cloud). Amplitude drives avatar lip-sync.
         </div>
         <label className="dim mono" style={{ fontSize: 9, display: "block", marginTop: 10 }}>SPEED {ttsRate.toFixed(2)}x</label>
         <input type="range" min={0.7} max={1.4} step={0.05} value={ttsRate} style={{ width: "100%", accentColor: "var(--red)" }}
