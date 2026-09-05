@@ -1,5 +1,3 @@
-def test_test_runner_does_not_install_bridge_guard_at_import_time():
-    import importlib
+def test_test_runner_import_is_safe():
     import test_runner
-
-    assert hasattr(test_runner, "run_all")
+    assert callable(test_runner.run_all)
