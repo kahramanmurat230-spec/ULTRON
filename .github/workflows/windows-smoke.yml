@@ -1,0 +1,83 @@
+name: ULTRON Windows Smoke
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows-smoke:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install backend dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+          if (Test-Path backend/requirements.v16.txt) { pip install -r backend/requirements.v16.txt }
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Compile backend
+        working-directory: backend
+        run: python -m compileall -q .
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Start backend
+        shell: pwsh
+        run: |
+          $env:ULTRON_AUTH = "0"
+          $env:ULTRON_PERSISTENT_MEMORY = "0"
+          $p = Start-Process -FilePath python -ArgumentList "-B", "backend/server.py" -PassThru -WindowStyle Hidden
+          "BACKEND_PID=$($p.Id)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $ready = $false
+          for ($i = 0; $i -lt 60; $i++) {
+            try {
+              $r = Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/system" -TimeoutSec 2
+              if ($r.StatusCode -eq 200) { $ready = $true; break }
+            } catch {}
+            Start-Sleep -Seconds 2
+          }
+          if (-not $ready) {
+            if (Get-Process -Id $p.Id -ErrorAction SilentlyContinue) { Stop-Process -Id $p.Id -Force }
+            throw "Backend did not become ready on port 8000"
+          }
+
+      - name: Runtime smoke checks
+        shell: pwsh
+        run: |
+          $system = Invoke-RestMethod "http://127.0.0.1:8000/api/system"
+          if ($null -eq $system.cpu) { throw "system endpoint missing cpu" }
+          $tools = Invoke-RestMethod "http://127.0.0.1:8000/api/tools"
+          if ($tools.Count -lt 6) { throw "tool registry returned fewer than 6 tools" }
+          $memory = Invoke-RestMethod "http://127.0.0.1:8000/api/memory"
+          if ($null -eq $memory.session_count) { throw "memory endpoint missing session_count" }
+          $health = Invoke-RestMethod "http://127.0.0.1:8000/api/system/health"
+          if ($null -eq $health.ollama) { throw "health endpoint missing ollama state" }
+
+      - name: Stop backend
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:BACKEND_PID) {
+            Stop-Process -Id ([int]$env:BACKEND_PID) -Force -ErrorAction SilentlyContinue
+          }
