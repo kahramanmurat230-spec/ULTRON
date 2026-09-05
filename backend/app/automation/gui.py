@@ -30,8 +30,7 @@ class GUIAutomation:
 
     def _pyautogui(self):
         try: import pyautogui; return pyautogui
-        except ImportError as e: raise RuntimeError('GUI otomasyonu için pyautogui kurulmalı.') from e
-        except SystemExit as e:
+        except (ImportError, SystemExit) as e:
             # mouseinfo (a pyautogui dependency) calls sys.exit() instead of
             # raising when tkinter is missing, even with a display present.
             # Surface this as an honest RuntimeError, not a process crash.
