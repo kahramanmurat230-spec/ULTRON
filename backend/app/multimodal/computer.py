@@ -104,7 +104,11 @@ class PyAutoGUIExecutor:
         self.error = None
         try:
             import pyautogui  # noqa: F401
-        except Exception as exc:  # noqa: BLE001
+        except (Exception, SystemExit) as exc:  # noqa: BLE001
+            # Some optional pyautogui deps (e.g. mouseinfo) call sys.exit()
+            # instead of raising when a required system lib (tkinter) is
+            # missing, even though a display is present. Treat that as an
+            # honest "unavailable", never as a process-crashing failure.
             self.error = f"pyautogui yok ({exc})"
             self.available = False
         else:

@@ -162,56 +162,56 @@ class PlaywrightEngine(BrowserEngine):
 
     def navigate(self, url: str) -> dict:
         self._ensure()
-        return self.agent.act("navigate", {"url": url})
+        return self.agent.navigate(url)
+
+    def _find_elements_as_dom(self, source: str, confidence: float) -> list:
+        # BrowserAgent has no generic action dispatcher / read_ax method; use
+        # its real find_elements() (actual Playwright DOM query) as the
+        # concrete, honest data source for both DOM and AX-style listings.
+        raw = self.agent.find_elements(selector="*", limit=200) or []
+        out = []
+        for el in raw:
+            selector = f"#{el['id']}" if el.get("id") else f"{el.get('tag', '*')}:nth-of-type({el.get('index', 0) + 1})"
+            name = el.get("name") or el.get("aria") or el.get("text", "")
+            box = el.get("rect")
+            out.append(DOMElement(
+                selector=selector,
+                role=el.get("tag", "unknown"),
+                name=name,
+                text=el.get("text", ""),
+                attributes={k: el[k] for k in ("id", "name", "aria") if el.get(k)},
+                visibility="visible" if box else "hidden",
+                enabled=True,
+                bounding_box=tuple(box.values()) if isinstance(box, dict) else (tuple(box) if box else None),
+                confidence=confidence, source=source))
+        return out
 
     def dom_elements(self) -> list:
         self._ensure()
-        raw = self.agent.act("read_dom", {}) or {}
-        out = []
-        for el in raw.get("elements", []):
-            out.append(DOMElement(
-                selector=el.get("selector", ""),
-                role=el.get("role", "unknown"),
-                name=el.get("name", "") or el.get("text", ""),
-                text=el.get("text", ""),
-                attributes=el.get("attributes", {}),
-                visibility="visible" if el.get("visible", True) else "hidden",
-                enabled=bool(el.get("enabled", True)),
-                bounding_box=tuple(el["box"]) if el.get("box") else None,
-                confidence=0.9, source="dom"))
-        return out
+        return self._find_elements_as_dom("dom", 0.9)
 
     def ax_elements(self) -> list:
         self._ensure()
-        raw = self.agent.act("read_ax", {}) or {}
-        out = []
-        for el in raw.get("elements", []):
-            out.append(DOMElement(
-                selector=el.get("selector", ""), role=el.get("role", ""),
-                name=el.get("name", ""), text=el.get("text", ""),
-                visibility="visible" if el.get("visible", True) else "hidden",
-                enabled=bool(el.get("enabled", True)),
-                bounding_box=tuple(el["box"]) if el.get("box") else None,
-                confidence=0.95, source="ax"))
-        return out
+        return self._find_elements_as_dom("ax", 0.95)
 
     def click(self, selector: str) -> dict:
         self._ensure()
-        return self.agent.act("click", {"selector": selector})
+        return self.agent.click(selector)
 
     def type_text(self, selector: str, text: str) -> dict:
         self._ensure()
-        return self.agent.act("type", {"selector": selector, "text": text})
+        return self.agent.type(selector, text)
 
     def screenshot_bytes(self) -> bytes:
         self._ensure()
-        path = self.agent.act("screenshot", {})
+        result = self.agent.screenshot()
         from pathlib import Path
+        path = (result or {}).get("path")
         return Path(path).read_bytes() if path else b""
 
     def page_text(self) -> str:
         self._ensure()
-        return self.agent.act("read_text", {}) or ""
+        return (self.agent.read_text() or {}).get("text", "")
 
 
 # ---------------------------------------------------------------- runtime
