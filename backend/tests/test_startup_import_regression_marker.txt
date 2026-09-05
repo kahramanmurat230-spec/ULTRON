@@ -1,1 +1,0 @@
-startup import regression covered by test_startup_import_regression.py
