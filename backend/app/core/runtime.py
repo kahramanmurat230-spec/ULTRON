@@ -232,7 +232,12 @@ class UltronRuntime:
             from app.voice.voice_stack_v2 import LiveVoiceV2,VoiceStackV2
             stack=getattr(self,'live_stack',None) or VoiceStackV2(); self.live_stack=stack; self.live_voice_v2=LiveVoiceV2(self.agent,self.tts,self.settings,stack)
             import threading; threading.Thread(target=self.live_voice_v2.run,daemon=True).start()
-        except Exception:self.live_voice.start()
+        except Exception as exc:
+            # Never fall back to the legacy LiveVoice (app.voice.live_voice) here: it
+            # detects "wake word" by substring-matching the *already transcribed*
+            # text instead of a real acoustic wake-word engine, which is an explicit
+            # fake-success anti-pattern. Report the real reason honestly instead.
+            self.live_voice_error=str(exc)[:300]
     def stop_live_voice(self):
         v2=getattr(self,'live_voice_v2',None)
         if v2:v2.stop()
