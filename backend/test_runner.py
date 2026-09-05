@@ -6,6 +6,12 @@ import sys
 import urllib.request
 from pathlib import Path
 
+# server.py imports this module before constructing its global Hub. Install the
+# runtime guard at that point so a failed optional V16 boot cannot crash V15.
+from app.core.runtime_degradation import install_bridge_guard
+
+install_bridge_guard()
+
 BASE = Path(__file__).resolve().parent
 ROOT = BASE.parent
 FRONTEND = ROOT / "frontend"
