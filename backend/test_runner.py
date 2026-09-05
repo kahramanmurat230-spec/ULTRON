@@ -6,11 +6,11 @@ import sys
 import urllib.request
 from pathlib import Path
 
-# server.py imports this module before constructing its global Hub. Install the
-# runtime guard at that point so a failed optional V16 boot cannot crash V15.
+# server.py imports this module before constructing its global Hub. The runtime
+# guard is installed lazily when the validation suite actually runs, after the
+# bridge module has finished initializing; this avoids a bridge <-> test_runner
+# circular import during backend startup.
 from app.core.runtime_degradation import install_bridge_guard
-
-install_bridge_guard()
 
 BASE = Path(__file__).resolve().parent
 ROOT = BASE.parent
@@ -35,6 +35,10 @@ async def _run(name: str, argv: list, cwd: Path, timeout: int, emit) -> dict:
 
 
 async def run_all(emit, quick: bool = False) -> list:
+    # bridge.py is fully initialized by the time validation is requested, so
+    # installing the guard here is safe and preserves the degraded V16 path.
+    install_bridge_guard()
+
     results = []
     results.append(await _run("TypeScript", ["npx", "tsc", "--noEmit"], FRONTEND, 240, emit))
     if not quick:
