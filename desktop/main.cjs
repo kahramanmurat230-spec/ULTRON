@@ -50,6 +50,10 @@ function startBackend() {
 function waitForBackend(timeoutMs = 30000) {
   const started = Date.now();
   return new Promise((resolve, reject) => {
+    const retry = () => {
+      if (Date.now() - started > timeoutMs) return reject(new Error('ULTRON backend zaman aşımına uğradı.'));
+      setTimeout(probe, 250);
+    };
     const probe = () => {
       const req = http.get(`http://127.0.0.1:${BACKEND_PORT}/api/system`, (res) => {
         res.resume();
@@ -59,28 +63,29 @@ function waitForBackend(timeoutMs = 30000) {
       req.on('error', retry);
       req.setTimeout(1200, () => { req.destroy(); retry(); });
     };
-    const retry = () => {
-      if (Date.now() - started > timeoutMs) return reject(new Error('ULTRON backend zaman aşımına uğradı.'));
-      setTimeout(probe, 250);
-    };
     probe();
   });
 }
 
 function startStaticServer(root) {
+  const rootAbs = path.resolve(root);
   return new Promise((resolve, reject) => {
     staticServer = http.createServer((req, res) => {
       const parsed = url.parse(req.url || '/');
       let pathname = decodeURIComponent(parsed.pathname || '/');
       if (pathname === '/') pathname = '/index.html';
-      const safe = path.normalize(pathname).replace(/^([.][.][/\\])+/, '');
-      let file = path.join(root, safe);
-      if (!file.startsWith(path.resolve(root))) return void (res.writeHead(403), res.end());
+      const relative = pathname.replace(/^[/\\]+/, '');
+      const file = path.resolve(rootAbs, relative);
+      if (file !== rootAbs && !file.startsWith(rootAbs + path.sep)) {
+        res.writeHead(403);
+        return res.end();
+      }
 
-      if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) file = path.join(root, 'index.html');
-      fs.readFile(file, (err, data) => {
+      let target = file;
+      if (!fs.existsSync(target) || fs.statSync(target).isDirectory()) target = path.join(rootAbs, 'index.html');
+      fs.readFile(target, (err, data) => {
         if (err) return void (res.writeHead(404), res.end('Not found'));
-        const ext = path.extname(file).toLowerCase();
+        const ext = path.extname(target).toLowerCase();
         const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.woff2': 'font/woff2' };
         res.writeHead(200, { 'Content-Type': types[ext] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
         res.end(data);
@@ -97,9 +102,7 @@ function startStaticServer(root) {
 async function createWindow() {
   const root = getFrontendRoot();
   const index = path.join(root, 'index.html');
-  if (!fs.existsSync(index)) {
-    throw new Error('Frontend build bulunamadı. Önce frontend build alınmalıdır.');
-  }
+  if (!fs.existsSync(index)) throw new Error('Frontend build bulunamadı. Önce frontend build alınmalıdır.');
 
   startBackend();
   await waitForBackend();
@@ -112,11 +115,7 @@ async function createWindow() {
     minHeight: 700,
     title: 'ULTRON',
     backgroundColor: '#05050a',
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true
-    },
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
     show: false
   });
 
