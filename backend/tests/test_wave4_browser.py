@@ -224,3 +224,47 @@ def test_engine_playwright_honest_unavailable():
     eng._checked = False
     st = eng.status()
     assert st["available"] is False and st["note"]
+
+
+class _FakeRealBrowserAgent:
+    """Mimics app.browser.agent.BrowserAgent's real (non-generic) method
+    surface: no act()/read_ax() dispatcher, just concrete named methods."""
+
+    def _ensure(self):
+        return True
+
+    def navigate(self, url):
+        return {"url": url, "title": "Real Title", "status": 200}
+
+    def find_elements(self, selector="*", limit=200):
+        return [{"index": 0, "tag": "a", "text": "Result 1", "id": "r1",
+                  "name": None, "aria": None, "rect": {"x": 0, "y": 0, "width": 10, "height": 10}}]
+
+    def click(self, selector):
+        return {"clicked": selector}
+
+    def type(self, selector, text):
+        return {"typed": len(text), "selector": selector}
+
+    def screenshot(self):
+        return {"path": None}
+
+    def read_text(self):
+        return {"text": "page body text"}
+
+
+def test_playwright_engine_wraps_real_browser_agent_api():
+    """Regression: PlaywrightEngine must call BrowserAgent's real concrete
+    methods (navigate/find_elements/click/type/screenshot/read_text), not a
+    non-existent generic act()/read_ax() dispatcher. Previously this crashed
+    with AttributeError on any real navigate/dom_elements/click/etc. call."""
+    eng = PlaywrightEngine(agent=_FakeRealBrowserAgent())
+    nav = eng.navigate("https://example.com")
+    assert nav["title"] == "Real Title"
+    dom = eng.dom_elements()
+    assert dom and dom[0].selector == "#r1" and dom[0].source == "dom"
+    ax = eng.ax_elements()
+    assert ax and ax[0].source == "ax"
+    assert eng.click("#r1") == {"clicked": "#r1"}
+    assert eng.type_text("#r1", "hi")["typed"] == 2
+    assert eng.page_text() == "page body text"
