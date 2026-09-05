@@ -39,11 +39,15 @@ echo [5/5] master_rules muhurleniyor + ilk saglik taramasi...
 cd backend
 python -B -c "from app.personal.user_dna import MasterRules; MasterRules(); print('   master_rules.json muhurlendi (KUTSAL).')"
 python -B -c "from app.core.doctor import run_doctor; r=run_doctor({'db_paths':[], 'rules_path':'config/security/master_rules.json'}); print('   DOCTOR:', r['overall']); print('  ', r['summary'])"
+cd ..
+
+echo [VERIFY] Bagimlilik ve temel ortam dogrulamasi...
+python scripts\check_deps.py
+if errorlevel 1 (
+  echo [WARN] Zorunlu bazi ogeler eksik — yukaridaki rapora bakin.
+) else (
+  echo [OK] Bagimlilik dogrulamasi gecti.
+)
 echo.
 echo Kurulum tamam. Baslatmak icin: scripts\start_ultron.bat
 pause
-
-
-echo [5/5] Kurulum dogrulamasi...
-python scripts\check_deps.py
-if errorlevel 1 ( echo [WARN] Zorunlu bazi ogeler eksik — yukaridaki rapora bakin. & pause )
