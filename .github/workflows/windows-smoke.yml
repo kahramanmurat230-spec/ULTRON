@@ -47,10 +47,15 @@ jobs:
         run: |
           $env:ULTRON_AUTH = "0"
           $env:ULTRON_PERSISTENT_MEMORY = "0"
-          $p = Start-Process -FilePath python -ArgumentList "-B", "backend/server.py" -PassThru -WindowStyle Hidden
+          $stdout = Join-Path $env:RUNNER_TEMP "ultron-backend.stdout.log"
+          $stderr = Join-Path $env:RUNNER_TEMP "ultron-backend.stderr.log"
+          $p = Start-Process -FilePath python -ArgumentList "-B", "backend/server.py" -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
           "BACKEND_PID=$($p.Id)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "BACKEND_STDOUT=$stdout" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "BACKEND_STDERR=$stderr" | Out-File -FilePath $env:GITHUB_ENV -Append
           $ready = $false
           for ($i = 0; $i -lt 60; $i++) {
+            if ($p.HasExited) { break }
             try {
               $r = Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/system" -TimeoutSec 2
               if ($r.StatusCode -eq 200) { $ready = $true; break }
@@ -58,6 +63,12 @@ jobs:
             Start-Sleep -Seconds 2
           }
           if (-not $ready) {
+            Write-Host "=== ULTRON BACKEND STDOUT ==="
+            if (Test-Path $stdout) { Get-Content $stdout -ErrorAction SilentlyContinue }
+            Write-Host "=== ULTRON BACKEND STDERR ==="
+            if (Test-Path $stderr) { Get-Content $stderr -ErrorAction SilentlyContinue }
+            Write-Host "=== PROCESS STATUS ==="
+            if ($p.HasExited) { Write-Host "Backend exited with code $($p.ExitCode)" } else { Write-Host "Backend is still running but did not answer" }
             if (Get-Process -Id $p.Id -ErrorAction SilentlyContinue) { Stop-Process -Id $p.Id -Force }
             throw "Backend did not become ready on port 8000"
           }
