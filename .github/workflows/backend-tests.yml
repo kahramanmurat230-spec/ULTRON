@@ -24,18 +24,6 @@ jobs:
           pip install pytest
       - name: Compile backend
         run: python -m compileall -q app
-      - name: Normalize time-sensitive regression fixture
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          p = Path('test_v2_modules.py')
-          s = p.read_text(encoding='utf-8')
-          old = 'night = time.mktime((2026, 8, 25, 23, 30, 0, 0, 0, -1))  # guaranteed night band'
-          new = 'now = time.localtime()\nnight = time.mktime((now.tm_year, now.tm_mon, now.tm_mday, 23, 30, 0, 0, 0, -1))  # guaranteed night band'
-          if old not in s:
-              raise SystemExit('expected UserDNA fixture not found')
-          p.write_text(s.replace(old, new), encoding='utf-8')
-          PY
       - name: Run backend tests
         run: pytest -q -s
 

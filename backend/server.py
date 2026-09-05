@@ -3,9 +3,20 @@ import asyncio
 import json
 import os
 import re
+import sys
 import time
 from collections import deque
 from pathlib import Path
+
+# Windows consoles frequently default to a legacy codepage (e.g. cp1252) that
+# cannot encode Turkish/unicode text emitted by doctor/health diagnostics.
+# Reconfigure stdio to UTF-8 with a safe fallback so free-form diagnostic text
+# never crashes startup (on_startup) with UnicodeEncodeError.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass
 
 import aiohttp
 from aiohttp import web

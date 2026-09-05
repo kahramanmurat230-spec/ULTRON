@@ -229,7 +229,8 @@ vpg_ne = VoiceprintGuard(path=os.path.join(tmp, "vp3.npy"), enabled=True)
 check("p4 vp no-enrollment", vpg_ne.verify(make_test_pcm(220))["ok"] is False)
 
 dna = UserDNA(path=os.path.join(tmp, "dna.db"))
-night = time.mktime((2026, 8, 25, 23, 30, 0, 0, 0, -1))  # guaranteed night band
+_now = time.localtime()
+night = time.mktime((_now.tm_year, _now.tm_mon, _now.tm_mday, 23, 30, 0, 0, 0, -1))  # guaranteed night band
 dna.insert("coding", "VSCode", 60, None, "python dosyası", ts=night)
 dna.insert("coding", "VSCode", 45, None, "python", ts=night + 60)
 check("p4 dna insert+recent", len(dna.recent(7)) == 2)
