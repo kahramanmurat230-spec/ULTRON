@@ -1,7 +1,10 @@
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_submodules
 
-ROOT = Path(__file__).resolve().parent
+# PyInstaller executes spec files via exec(), so __file__ is not defined.
+# PyInstaller injects SPECPATH (the directory containing this spec file)
+# into the spec's namespace instead.
+ROOT = Path(SPECPATH).resolve()
 
 hiddenimports = collect_submodules('app')
 hiddenimports += [
