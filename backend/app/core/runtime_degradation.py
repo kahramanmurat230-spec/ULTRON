@@ -23,7 +23,7 @@ class DegradedRuntime:
 def install_bridge_guard() -> None:
     """Keep V15 alive if V16 construction fails, without changing availability.
 
-    ``UltronBridge.available`` still reports False. Only direct legacy access to
+    ``UltronBridge.available`` remains False. Only direct legacy access to
     ``bridge.runtime.memory`` receives a minimal SQLite-backed adapter so optional
     mesh/HUD initialization can degrade instead of crashing the whole server.
     """
@@ -42,4 +42,9 @@ def install_bridge_guard() -> None:
         return value
 
     UltronBridge.__getattribute__ = guarded_getattribute
+    # Keep availability based on the real backing attribute, not the degraded
+    # adapter returned for legacy startup code.
+    UltronBridge.available = property(
+        lambda self: object.__getattribute__(self, "runtime") is not None
+    )
     UltronBridge._degraded_runtime_guard = True
