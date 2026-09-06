@@ -2,13 +2,7 @@ import json
 
 
 class Planner:
-    """Bounded local-LLM planner with strict structural validation.
-
-    The deterministic Agent 2.0 planner remains the first choice for requests
-    it understands. This planner is the hybrid fallback for richer natural
-    language tasks. It never executes tools itself and rejects unsafe/invalid
-    model output before an executor can see it.
-    """
+    """Bounded local-LLM planner with strict structural validation."""
 
     MAX_STEPS = 12
 
@@ -59,19 +53,8 @@ class Planner:
                     raise ValueError(f"Geçersiz bağımlılık: step {i} -> {dep}")
                 if dep not in deps:
                     deps.append(dep)
-            normalized.append({
-                "index": i,
-                "tool": tool,
-                "arguments": args,
-                "reason": reason[:300],
-                "depends_on": deps,
-            })
-        return {
-            "goal": str(plan.get("goal") or goal or "")[:1000],
-            "steps": normalized,
-            "planner": "local-hybrid",
-            "bounded": True,
-        }
+            normalized.append({"index": i, "tool": tool, "arguments": args, "reason": reason[:300], "depends_on": deps})
+        return {"goal": str(plan.get("goal") or goal or "")[:1000], "steps": normalized, "planner": "local-hybrid", "bounded": True}
 
     def make_plan(self, goal):
         tool_names = ", ".join(self.registry.names())
@@ -82,17 +65,14 @@ class Planner:
             "depends_on yalnızca kendisinden önceki 0-tabanlı step index'lerini içerebilir. "
             "Tehlikeli işlemleri kullanıcı onayı olmadan çalıştırma; sadece planla. "
             "Kullanılabilecek araçlar: " + tool_names + ". "
-            "JSON biçimi: {\"goal\": str, \"steps\": "
-            "[{\"tool\": str, \"arguments\": object, \"reason\": str, "
-            "\"depends_on\": [int]}]}."
+            "JSON biçimi: {\"goal\": str, \"steps\": [{\"tool\": str, \"arguments\": object, \"reason\": str, \"depends_on\": [int]}]}."
         )
-        r = self.brain.chat(
-            [{"role": "system", "content": system},
-             {"role": "user", "content": goal}], tools=None)
+        r = self.brain.chat([{"role": "system", "content": system}, {"role": "user", "content": goal}], tools=None)
         content = (r.get("message", {}).get("content") or "").strip()
         return self.validate_plan(self._extract_json(content), goal=goal)
 
 
-# Activate the integration after Agent has already been imported by runtime.
 from app.agent.hybrid_integration import _install as _install_hybrid_agent
 _install_hybrid_agent()
+from app.agent.self_coding_integration import _install as _install_self_coding_agent
+_install_self_coding_agent()
