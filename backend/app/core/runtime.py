@@ -1,4 +1,4 @@
-import re, json
+import os, re, json
 from pathlib import Path
 from app.core.brain import Brain
 from app.core.tool_registry import ToolRegistry
@@ -30,7 +30,9 @@ from app.core.self_awareness import SelfAwareness
 
 class UltronRuntime:
     def __init__(self, settings_path='config/settings.json'):
-        self.root=Path.cwd().resolve()
+        # Packaged desktop builds run from a writable per-user data directory
+        # while code tools still need an explicit workspace target.
+        self.root=Path(os.environ.get("ULTRON_WORKSPACE", Path.cwd())).resolve()
         self.settings_path=settings_path
         self.settings=json.loads(Path(settings_path).read_text(encoding='utf-8'))
         self.approved=False
@@ -43,8 +45,9 @@ class UltronRuntime:
             self.wake_manager=WakeWordManager(self.settings,vault=self.vault)
         except Exception:
             self.wake_manager=None
-        self.sandbox=FilesystemSandbox(self.settings, workspace_root=str(Path.cwd()))
-        self.memory=Memory(redact_fn=self.vault.redact); self.semantic_memory=SemanticMemory(self.memory); self.audit=AuditLog(extra_values_fn=self.vault.all_values); self.permissions=PermissionManager(self.settings)
+        self.sandbox=FilesystemSandbox(self.settings, workspace_root=str(self.root))
+        memory_path=os.environ.get("ULTRON_MEMORY_PATH", "data/memory/ultron.db")
+        self.memory=Memory(memory_path, redact_fn=self.vault.redact); self.semantic_memory=SemanticMemory(self.memory); self.audit=AuditLog(extra_values_fn=self.vault.all_values); self.permissions=PermissionManager(self.settings)
         self.registry=ToolRegistry(); self.brain=Brain(self.settings); self.tts=TextToSpeech()
         from app.core.model_router import ModelRouter
         self._models_cache={"ts":0.0,"models":[]}

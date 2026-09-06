@@ -47,7 +47,10 @@ def get_system_stats_dict() -> dict:
 import test_runner
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE, "data")
+# Desktop builds keep mutable state outside the installed application bundle.
+# The default preserves the source/development layout exactly.
+DATA_DIR = os.environ.get("ULTRON_DATA_DIR", os.path.join(BASE, "data"))
+os.makedirs(DATA_DIR, exist_ok=True)
 WORKSPACE = os.environ.get("ULTRON_WORKSPACE", os.path.dirname(BASE))
 OLLAMA_HOST = os.environ.get("ULTRON_OLLAMA_HOST", "http://127.0.0.1:11434")
 PERSISTENT = os.environ.get("ULTRON_PERSISTENT_MEMORY", "1") != "0"
@@ -257,6 +260,32 @@ async def api_system_health(_req: web.Request) -> web.Response:
     h = dict(getattr(hub, "health", {}))
     h["ollama"] = "connected" if hub.ai_status.get("connected") else "offline"
     return web.json_response(h)
+
+
+# Electron loads the production React Cockpit from the same loopback origin as
+# the API. This preserves existing relative /api and /ws calls without opening
+# a CORS surface. In source/dev mode the variable is unset, so Vite is unchanged.
+def _desktop_frontend_asset(request_path: str) -> Path | None:
+    configured = os.environ.get("ULTRON_FRONTEND_DIST", "").strip()
+    if not configured or request_path.lstrip("/").startswith("api/"):
+        return None
+    root = Path(configured).expanduser().resolve()
+    index = root / "index.html"
+    if not index.is_file():
+        return None
+    candidate = (root / request_path.lstrip("/")).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return None
+    return candidate if candidate.is_file() else index
+
+
+async def api_desktop_frontend(req: web.Request) -> web.Response:
+    asset = _desktop_frontend_asset(req.match_info.get("path", ""))
+    if asset is None:
+        raise web.HTTPNotFound()
+    return web.FileResponse(asset)
 
 
 # ---------------- Phase-4: sovereign / master / voiceprint / workspace ----------------
@@ -1616,6 +1645,9 @@ def main() -> None:
     app.router.add_post("/api/vault/set", api_vault_set)
     app.router.add_post("/api/vault/delete", api_vault_delete)
     app.router.add_get("/ws", ws_handler)
+    # Must be last: only desktop sets ULTRON_FRONTEND_DIST, and all API/WS
+    # routes above retain their existing handlers.
+    app.router.add_get(r"/{path:.*}", api_desktop_frontend)
     port = int(os.environ.get("ULTRON_PORT", "8000"))
     bind_host = os.environ.get("ULTRON_BIND_HOST", "127.0.0.1")
     if bind_host not in {"127.0.0.1", "localhost", "::1"} and not hub.auth.required:

@@ -1,0 +1,63 @@
+{
+  "name": "ultron-desktop",
+  "private": true,
+  "version": "18.0.0",
+  "description": "ULTRON Windows desktop shell",
+  "main": "main.cjs",
+  "scripts": {
+    "build:frontend": "npm --prefix ../frontend run build",
+    "stage:backend": "python scripts/stage_backend.py",
+    "pack:win": "npm run build:frontend && npm run stage:backend && electron-builder --win --x64 --dir",
+    "dist:win": "npm run build:frontend && npm run stage:backend && electron-builder --win nsis portable --x64",
+    "test:e2e:windows": "powershell -ExecutionPolicy Bypass -File scripts/windows-e2e.ps1 -ExePath release/win-unpacked/ULTRON.exe"
+  },
+  "devDependencies": {
+    "electron": "^44.2.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "ai.ultron.desktop",
+    "productName": "ULTRON",
+    "icon": "build/icon.ico",
+    "asar": true,
+    "directories": {
+      "buildResources": "build",
+      "output": "release"
+    },
+    "files": [
+      "main.cjs",
+      "preload.cjs",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": ".stage/backend",
+        "to": "backend"
+      },
+      {
+        "from": "../frontend/dist",
+        "to": "frontend"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "artifactName": "${productName}-${version}-${arch}-${target}.${ext}",
+      "executableName": "ULTRON"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}
