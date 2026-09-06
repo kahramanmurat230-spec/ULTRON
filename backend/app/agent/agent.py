@@ -5,6 +5,24 @@ import app.agent.persona_guard as persona_guard
 from app.emotion.emotion_engine import analyze as emotion_analyze
 from app.core.intent import classify, vision_pattern, VISION_PROMPT
 
+
+# Explicit recall requests are answered from durable memory before generic
+# intent/tool routing. Conversation is only a fallback after these categories.
+_RECALL_LONG_TERM_KINDS = ("FACT", "PREFERENCE", "PROFILE", "IMPORTANT", "TASK", "DEVICE")
+_RECALL_KIND_ALIASES = tuple(alias for kind in _RECALL_LONG_TERM_KINDS
+                             for alias in (kind, kind.lower()))
+_RECALL_KIND_PRIORITY = {kind: index for index, kind in enumerate(_RECALL_LONG_TERM_KINDS)}
+_RECALL_MARKERS = (
+    "hatırlıyor musun", "hatırlıyor", "hatirliyor musun", "hatirliyor",
+    "hatırında mı", "hatirinda mi", "geçen söylediğim", "gecen soyledigim",
+    "geçen sana söylediğim", "gecen sana soyledigim", "sana söylediğim",
+    "sana soyledigim", "kaydettiğim", "kaydettigim", "not aldığın", "not aldigin",
+)
+_RECALL_NOISE = {"ultron", "ben", "benim", "bana", "sen", "sana", "senin", "sizin",
+                 "musun", "mısın", "misin", "müsün", "müsun", "ne", "neyi", "neydi",
+                 "nedir", "diye", "geçen", "gecen", "not"}
+
+
 class Agent:
     def __init__(self,brain,executor,memory,registry,settings,audit,tts,max_steps=8,semantic_memory=None,planner=None,vision_llm=None,adaptive=None,router=None,world_fn=None,redact_fn=None):
         self.brain=brain; self.executor=executor; self.memory=memory; self.registry=registry; self.settings=settings; self.audit=audit; self.tts=tts; self.max_steps=max_steps
@@ -35,9 +53,136 @@ class Agent:
             return self._boss_hitap(PersonaGuard.reframe(answer))
         return self._boss_hitap(answer)
     def _boss_hitap(self, answer):
-        if "boss" not in (answer or "").lower():
+        # Deterministic Turkish recall replies already address the owner as
+        # "Patron", so avoid adding a second conflicting salutation.
+        if not any(hitap in (answer or "").lower() for hitap in ("boss", "patron")):
             return "Boss, " + answer
         return answer
+
+    @staticmethod
+    def _is_memory_recall(text):
+        normalized = " ".join((text or "").casefold().split())
+        # Keep established deterministic profile/task read paths intact.
+        if any(phrase in normalized for phrase in (
+                "benim adım ne", "ismim ne", "görevlerim", "todo listem",
+                "ne yapmam gerektiğini", "bugün ne yapmam")):
+            return False
+        if any(marker in normalized for marker in _RECALL_MARKERS):
+            return True
+        # The present-tense shorthand is intentionally limited to code
+        # questions ("kodum ne?") so it does not swallow regular chat.
+        if "kod" in normalized and re.search(
+                r"\bbenim\s+[\wçğıöşü]+(?:\s+[\wçğıöşü]+){0,8}\s+ne(?:ydi|dir)?\b", normalized, re.I):
+            return True
+        return bool(re.search(r"\b[\wçğıöşü]+(?:\s+[\wçğıöşü]+){0,8}\s+neydi\b", normalized, re.I))
+
+    @staticmethod
+    def _recall_stem(token):
+        """Normalize Turkish possessive/copula endings only for hit ranking."""
+        original = (token or "").casefold()
+        value = re.sub(r"(?:dur|dür|dır|dir|tur|tür|tır|tir)$", "", original)
+        value = re.sub(r"(?:mı|mi|mu|mü)$", "", value)
+        value = re.sub(r"(?:um|üm|ım|im|un|ün|ın|in|u|ü|ı|i)$", "", value)
+        return value if len(value) >= 3 else original
+
+    @classmethod
+    def _recall_focus(cls, text):
+        normalized = (text or "").casefold()
+        normalized = re.sub(r"\bultron\b[,:!\s]*", " ", normalized)
+        for marker in _RECALL_MARKERS:
+            normalized = normalized.replace(marker, " ")
+        tokens = re.findall(r"[\wçğıöşü]+", normalized, re.I)
+        return [cls._recall_stem(token) for token in tokens
+                if len(token) > 2 and token not in _RECALL_NOISE]
+
+    @classmethod
+    def _recall_matches(cls, focus, content):
+        memory_tokens = [cls._recall_stem(token) for token in re.findall(
+            r"[\wçğıöşü]+", str(content).casefold(), re.I)]
+        return sum(any(query == memory or (len(query) >= 3 and len(memory) >= 3 and
+                                            (query in memory or memory in query))
+                       for memory in memory_tokens) for query in set(focus))
+
+    def _search_recall_memory(self, queries, kinds):
+        """Use SemanticMemory.search while retaining the best result per record."""
+        if self.semantic_memory is None:
+            return []
+        allowed = {str(kind).upper() for kind in kinds}
+        best = {}
+        for query in queries:
+            if not query:
+                continue
+            try:
+                rows = self.semantic_memory.search(query, limit=12, kinds=kinds)
+            except TypeError:  # compatibility with old semantic-memory adapters
+                try: rows = self.semantic_memory.search(query, limit=12)
+                except Exception: continue
+            except Exception:
+                continue
+            for hit in rows or []:
+                if not isinstance(hit, (tuple, list)) or len(hit) < 4:
+                    continue
+                score, kind, content, created = hit[:4]
+                if str(kind).upper() not in allowed:
+                    continue
+                try: score = float(score)
+                except (TypeError, ValueError): score = 0.0
+                key = (str(kind).upper(), str(content), str(created))
+                candidate = (score, str(kind), str(content), created)
+                if key not in best or score > best[key][0]:
+                    best[key] = candidate
+        return list(best.values())
+
+    def _select_recall_hit(self, hits, focus, long_term):
+        if not focus:
+            return None
+        required = 2 if len(set(focus)) >= 2 else 1
+        candidates = [(score, kind, content, created, self._recall_matches(focus, content))
+                      for score, kind, content, created in hits]
+        candidates = [hit for hit in candidates if hit[0] > 0 and hit[4] >= required]
+        if not candidates:
+            return None
+        if long_term:
+            selected = max(candidates, key=lambda hit: (
+                -_RECALL_KIND_PRIORITY.get(hit[1].upper(), len(_RECALL_KIND_PRIORITY)),
+                hit[4], hit[0], str(hit[3])))
+        else:
+            selected = max(candidates, key=lambda hit: (hit[4], hit[0], str(hit[3])))
+        return selected[:4]
+
+    @staticmethod
+    def _recall_label(focus):
+        if "test" in focus and any(token.startswith("kod") for token in focus):
+            return "Test kodunuz"
+        if any(token.startswith("görev") or token.startswith("gorev") for token in focus):
+            return "Göreviniz"
+        if any(token.startswith("tercih") for token in focus):
+            return "Tercihiniz"
+        return None
+
+    def _memory_recall(self, text):
+        """Resolve explicit Turkish recall questions before intent/tool routing."""
+        if not self._is_memory_recall(text):
+            return None
+        focus = self._recall_focus(text)
+        queries = [text, " ".join(focus)]  # raw wording + subject-only wording
+        selected = self._select_recall_hit(
+            self._search_recall_memory(queries, _RECALL_KIND_ALIASES), focus, long_term=True)
+        if selected is None:
+            conversation = self._search_recall_memory(queries, ("conversation", "CONVERSATION"))
+            current = f"USER: {text}".casefold()  # never answer with this turn's question
+            selected = self._select_recall_hit(
+                [hit for hit in conversation if hit[2].casefold() != current], focus, long_term=False)
+        if selected is None:
+            return "İlgili bir hafıza kaydı bulamadım."
+        _score, kind, content, _created = selected
+        fact = re.match(r"^\s*(.+?)\s+(?:benim|sizin|kullanıcının)\s+(.+?)[.!?\s]*$", content, re.I)
+        required = 2 if len(set(focus)) >= 2 else 1
+        label = self._recall_label(focus)
+        if kind.upper() == "FACT" and fact and label and self._recall_matches(focus, fact.group(2)) >= required:
+            return f"Evet Patron. {label} {fact.group(1).strip(' -:–')}."
+        return f"Evet Patron. Hafızamdaki kayıt: {content}"
+
     def _save(self,role,text): self.memory.add("conversation",f"{role}: {text}")
     def _history(self,limit=20):
         rows=list(reversed(self.memory.recent(limit))); out=[]
@@ -85,6 +230,12 @@ class Agent:
         # vision requests must NEVER reach the text-only Qwen chat path
         if vision_pattern(text):
             return self._vision_pipeline(text)
+        # Recall is intentionally before classify()/write patterns.  Phrases
+        # such as "kaydettiğim" and "not aldığın" are questions, not commands
+        # to create a new memory or start an unrelated tool flow.
+        recall = self._memory_recall(text)
+        if recall is not None:
+            return recall
         if self.adaptive and "sarkazm" in text.lower() and ("aç" in text.lower() or "kapat" in text.lower()):
             mode=self.adaptive.override
             return f"Kaydedildi, Boss. Sarkazm modu: {'AÇIK' if mode=='sarkazm-on' else 'KAPALI' if mode=='sarkazm-off' else 'OTOMATİK'}."
