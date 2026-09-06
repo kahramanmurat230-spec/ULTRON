@@ -1,4 +1,4 @@
-from app.code_agent.self_coding_agent import SelfCodingAgent
+from app.code_agent.self_coding_agent_2 import SelfCodingAgent
 
 
 class DummyBrain:
