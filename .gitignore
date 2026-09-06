@@ -5,4 +5,6 @@ node_modules/
 backend/data/
 backend/backups/
 dist/
+desktop/.stage/
+desktop/release/
 backend/config/security/master_voiceprint.*
