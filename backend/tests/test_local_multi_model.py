@@ -29,13 +29,13 @@ def test_scoring_prefers_substantive_structured_answer():
     assert set(scored[0].dimensions) == {"substance","directness","completeness","structure","actionability"}
 
 
-def test_judge_uses_only_local_transport(monkeypatch):
+def test_judge_selects_an_existing_candidate(monkeypatch):
     client = LocalMultiModel(); captured = {}
     def fake_request(method, path, body=None):
-        captured.update(method=method, path=path, body=body); return {"choices":[{"message":{"content":"winner"}}]}
+        captured.update(method=method, path=path, body=body); return {"choices":[{"message":{"content":"CANDIDATE 2"}}]}
     monkeypatch.setattr(client, "_request", fake_request)
-    result = client.judge([LocalModelResult("a",True,"A"),LocalModelResult("b",True,"B")], judge_model="a")
-    assert result.content == "winner" and captured["path"] == "/chat/completions" and captured["body"]["model"] == "a"
+    result = client.judge([LocalModelResult("a",True,"A",score=70),LocalModelResult("b",True,"B",score=80)], judge_model="a")
+    assert result.model == "b" and result.content == "B" and captured["path"] == "/chat/completions" and captured["body"]["model"] == "a"
 
 
 def test_race_and_judge_returns_local_judge(monkeypatch):
@@ -43,7 +43,7 @@ def test_race_and_judge_returns_local_judge(monkeypatch):
     results = [LocalModelResult("a", True, "A", 100), LocalModelResult("b", True, "B", 20)]
     monkeypatch.setattr(client, "race", lambda *a, **k: results)
     monkeypatch.setattr(client, "judge", lambda *a, **k: LocalModelResult("judge:b", True, "B-final"))
-    chosen, returned = client.race_and_judge(["a","b"], [], judge_model="b")
+    chosen, returned = client.race_and_judge(["a","b"], [], judge_model="b", liquid_min_delta=1000)
     assert chosen.model == "judge:b" and returned == results
 
 
@@ -52,5 +52,12 @@ def test_race_and_judge_falls_back_to_score(monkeypatch):
     results = [LocalModelResult("slow", True, "S", 100), LocalModelResult("fast", True, "F", 10)]
     monkeypatch.setattr(client, "race", lambda *a, **k: results)
     monkeypatch.setattr(client, "judge", lambda *a, **k: None)
-    chosen, _ = client.race_and_judge(["slow","fast"], [], judge_model="fast")
+    chosen, _ = client.race_and_judge(["slow","fast"], [], judge_model="fast", liquid_min_delta=1000)
     assert chosen is not None
+
+
+def test_local_output_quality_gate():
+    client = LocalMultiModel()
+    client._local_multi_model = client
+    score, _ = client._score_candidate("## Plan\n- Adım 1: kodu analiz et.\n- Adım 2: testi çalıştır.", "worker")
+    assert score > 55
