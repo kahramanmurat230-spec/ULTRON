@@ -36,12 +36,12 @@ async function req<T>(path: string, init?: RequestInit, timeoutMs = 6000): Promi
   }
 }
 
-const post = (path: string, body?: unknown) =>
+const post = (path: string, body?: unknown, timeoutMs = 6000) =>
   req<{ ok: boolean; error?: string; output?: unknown }>(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body ?? {}),
-  });
+  }, timeoutMs);
 
 // ---------- service layer (spec names) ----------
 export const getSystemStatus = () => req<SystemSnapshot>("/api/system");
@@ -89,6 +89,8 @@ export const memoryV16Clear = () => post("/api/memory/v16/clear");
 export const memoryV16Search = (q: string) =>
   req<{ score: number; kind: string; content: string }[]>(`/api/memory/v16/search?q=${encodeURIComponent(q)}`);
 export const sendVoiceCommand = (text: string) => post("/api/agent/command", { text });
+export const pushToTalk = (seconds = 6.0) =>
+  post("/api/voice/ptt", { seconds }, 120000);
 export const captureScreen = () => post("/api/actions/screenshot");
 export const openBrowser = () => post("/api/actions/browser");
 export const systemCheck = () => post("/api/actions/system-check");
