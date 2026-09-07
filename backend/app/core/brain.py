@@ -10,6 +10,10 @@ class Brain:
         self.model = cfg.get("model", "qwen2.5-coder:7b")
         self.base_url = cfg.get("base_url", "http://127.0.0.1:11434")
         self.timeout = int(cfg.get("timeout_seconds", 180))
+        from app.security import sovereign_privacy as sov
+        sov.configure(settings)
+        if bool(settings.get("sovereign_mode", False)) and not sov.is_local(self.base_url):
+            raise ValueError(f"Sovereign mode aktif: uzak LLM endpoint'i reddedildi: {self.base_url}")
         # diagnostics (V17.1 debug): last wire-level facts, read by /api/debug/*
         self.last_http_status = None
         self.last_response_model = None
@@ -17,7 +21,7 @@ class Brain:
 
     def _post(self, endpoint, payload):
         from app.security import sovereign_privacy as sov
-        sov.assert_local(self.base_url)  # sovereign mode: cloud LLM = architectural block
+        sov.assert_local(self.base_url)
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(
             self.base_url.rstrip("/") + endpoint,

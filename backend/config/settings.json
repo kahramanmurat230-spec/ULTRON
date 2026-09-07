@@ -13,6 +13,18 @@
       "fast": "qwen3:4b",
       "general": "qwen3:8b",
       "note": "sadece kurulu modeller kullanilir; router gereksiz model degistirmez"
+    },
+    "local_multi_model": {
+      "enabled": true,
+      "base_url": "http://127.0.0.1:11434/v1",
+      "models": ["qwen3:4b", "qwen2.5-coder:7b"],
+      "judge_model": "qwen3:4b",
+      "timeout_s": 180,
+      "max_workers": 2,
+      "temperature": 0.2,
+      "max_tokens": 2048,
+      "scoring": {"enabled": true, "min_quality_score": 55, "liquid_min_delta": 8},
+      "note": "Yerel G0DM0D3-benzeri race + 100 puan heuristik skor + local judge. Bulut/OpenRouter/Claude/OpenAI fallback yok."
     }
   },
   "voice": {
@@ -31,50 +43,20 @@
     "volume": "1.0"
   },
   "security": {
-    "require_confirmation_for": [
-      "delete_file",
-      "run_shell",
-      "install_software",
-      "change_system_setting",
-      "send_message",
-      "write_text",
-      "gui_click",
-      "gui_double_click",
-      "gui_right_click",
-      "gui_scroll",
-      "gui_type",
-      "gui_press",
-      "gui_hotkey",
-      "gui_locate_and_click",
-      "apply_code_patch",
-      "close_application"
-    ],
-    "filesystem": {
-      "allowed_read_roots": ["..", "~"],
-      "allowed_write_roots": [".."],
-      "note": "relative paths resolve against backend/; ~ = home. UNC + system dirs always rejected."
-    }
+    "require_confirmation_for": ["delete_file", "run_shell", "install_software", "change_system_setting", "send_message", "write_text", "gui_click", "gui_double_click", "gui_right_click", "gui_scroll", "gui_type", "gui_press", "gui_hotkey", "gui_locate_and_click", "apply_code_patch", "close_application"],
+    "filesystem": {"allowed_read_roots": ["..", "~"], "allowed_write_roots": [".."], "note": "relative paths resolve against backend/; ~ = home. UNC + system dirs always rejected."}
   },
-  "proactive": {
-    "enabled": true,
-    "interval_seconds": 10,
-    "ram_warning_percent": 90,
-    "cpu_warning_percent": 95
-  },
+  "proactive": {"enabled": true, "interval_seconds": 10, "ram_warning_percent": 90, "cpu_warning_percent": 95},
   "persona_guard_mode": "reframe",
   "voiceprint_lock_enabled": false,
   "voiceprint_threshold": 0.75,
-  "sovereign_mode": false,
+  "sovereign_mode": true,
   "vision_enabled": false,
   "vision_targets": ["code", "vscode", "terminal", "pycharm", "chrome", "powershell", "cmd"],
   "vision_blacklist": ["password", "banka", "bank", "login", "private", "şifre", "cüzdan", "wallet"],
   "vision": {"enabled": true, "model": "llava:7b"},
   "code_agent": {"enabled": true, "project_root": ".", "max_context_chars": 50000, "require_approval_for_apply": true},
   "gui_automation": {"enabled": true, "require_confirmation": true},
-  "browser": {"headless": true, "channel": "auto", "timeout_seconds": 20, "note": "auto: bundled chromium -> system chrome -> system edge. Kurulum: python -m playwright install chromium"},
-  "wake": {
-    "keyword": "ultron",
-    "threshold": 0.5,
-    "note": "Gerçek audio-level wake-word. Porcupine: PICOVOICE_ACCESS_KEY env veya vault 'picovoice_access_key'; OpenWakeWord: data/voice/wake/*.tflite. Engine yoksa manuel tetikleme."
-  }
+  "browser": {"headless": true, "channel": "auto", "timeout_seconds": 20},
+  "wake": {"keyword": "ultron", "threshold": 0.5}
 }
