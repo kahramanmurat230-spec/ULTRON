@@ -25,10 +25,13 @@ class TextToSpeech:
         self.piper_executable = os.getenv(
             "ULTRON_PIPER_EXECUTABLE", str(s.get("piper_executable", "piper"))
         )
-        default_model = Path(__file__).resolve().parents[2] / "data" / "voice" / "piper" / "tr_TR-ahmet-medium.onnx"
-        self.piper_model = Path(
-            os.getenv("ULTRON_PIPER_MODEL", str(s.get("piper_model", default_model)))
-        ).expanduser()
+        backend_root = Path(__file__).resolve().parents[2]
+        default_model = backend_root / "data" / "voice" / "piper" / "tr_TR-fahrettin-medium.onnx"
+        configured_model = os.getenv("ULTRON_PIPER_MODEL", str(s.get("piper_model", default_model)))
+        self.piper_model = Path(configured_model).expanduser()
+        if not self.piper_model.is_absolute():
+            self.piper_model = backend_root / self.piper_model
+        self.piper_model = self.piper_model.resolve()
         self.espeak_executable = os.getenv(
             "ULTRON_ESPEAK_EXECUTABLE", str(s.get("espeak_executable", "espeak-ng"))
         )
@@ -63,7 +66,7 @@ class TextToSpeech:
             try:
                 rate = float(self.rate)
                 if rate > 0:
-                    cmd.extend(["--length_scale", str(max(0.5, min(2.0, 1.0 / rate)))] )
+                    cmd.extend(["--length_scale", str(max(0.5, min(2.0, 1.0 / rate)))])
             except (TypeError, ValueError):
                 pass
             proc = subprocess.run(
