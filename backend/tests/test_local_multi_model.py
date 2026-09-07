@@ -36,3 +36,31 @@ def test_best_fastest_ignores_failed_results():
         LocalModelResult("fast", True, "ok", 100),
     ]
     assert LocalMultiModel.best_fastest(results).model == "fast"
+
+
+def test_judge_uses_only_local_transport(monkeypatch):
+    client = LocalMultiModel()
+    captured = {}
+
+    def fake_request(method, path, body=None):
+        captured.update({"method": method, "path": path, "body": body})
+        return {"choices": [{"message": {"content": "winner"}}]}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    result = client.judge(
+        [LocalModelResult("a", True, "A", 10), LocalModelResult("b", True, "B", 20)],
+        judge_model="a",
+    )
+    assert result.content == "winner"
+    assert captured["path"] == "/chat/completions"
+    assert captured["body"]["model"] == "a"
+
+
+def test_race_and_judge_falls_back_to_fastest_if_judge_fails(monkeypatch):
+    client = LocalMultiModel()
+    results = [LocalModelResult("slow", True, "S", 100), LocalModelResult("fast", True, "F", 10)]
+    monkeypatch.setattr(client, "race", lambda *args, **kwargs: results)
+    monkeypatch.setattr(client, "judge", lambda *args, **kwargs: None)
+    chosen, returned = client.race_and_judge(["slow", "fast"], [])
+    assert chosen.model == "fast"
+    assert returned == results
