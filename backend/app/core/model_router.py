@@ -79,6 +79,14 @@ class ModelRouter:
     def local_multi_enabled(self):
         return bool((self.settings.get("llm", {}).get("local_multi_model", {}) or {}).get("enabled", False))
 
+    def _local_eval_options(self, cfg):
+        scoring = self.settings.get("llm", {}).get("scoring", {}) or {}
+        return {
+            "liquid_min_delta": float(cfg.get("liquid_min_delta", scoring.get("liquid_min_delta", 8.0))),
+            "min_quality_score": float(cfg.get("min_quality_score", scoring.get("min_quality_score", 0.0)))
+                if cfg.get("min_quality_score") is not None else float(scoring.get("min_quality_score", 0.0)),
+        }
+
     def chat(self, task, messages, tools=None, max_retries=1):
         models = list(self.get_models() or [])
         last_exc = None
@@ -92,7 +100,7 @@ class ModelRouter:
                 msg = result.get("message", {}) if isinstance(result, dict) else {}
                 # Tool-call turns stay deterministic. Final text turns are evaluated locally.
                 if self.local_multi_enabled() and not msg.get("tool_calls"):
-                    chosen, _ = self.race_local_and_judge(messages=messages)
+                    chosen, _ = self.race_local_and_judge(messages=messages, task=task)
                     if chosen and chosen.content:
                         return {"message": {"role": "assistant", "content": chosen.content}}
                 return result
@@ -148,10 +156,14 @@ class ModelRouter:
         models = models or cfg.get("models") or list(self.get_models() or [])
         if not models:
             return None, []
+        options = self._local_eval_options(cfg)
         return engine.race_and_judge(
             models, messages or [], judge_model=cfg.get("judge_model"), system=system, task=task,
             temperature=float(cfg.get("temperature", .2) if temperature is None else temperature),
-            max_tokens=int(cfg.get("max_tokens", 2048) if max_tokens is None else max_tokens))
+            max_tokens=int(cfg.get("max_tokens", 2048) if max_tokens is None else max_tokens),
+            liquid_min_delta=options["liquid_min_delta"],
+            min_quality_score=options["min_quality_score"],
+        )
 
     def _record(self, model, ok, latency_ms, error=None):
         health = self._health.setdefault(model, ModelHealth())
