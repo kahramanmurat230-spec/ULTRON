@@ -125,26 +125,50 @@ class ModelRouter:
             raise ValueError("JSON yanıt alınamadı.")
         return json.loads(content[a:b + 1])
 
-    def race_local(self, models, messages, *, temperature: float = 0.2, max_tokens: int = 2048):
-        """Race multiple Ollama/local models with zero cloud fallback."""
+    def _local_engine(self):
         from app.core.local_multi_model import LocalMultiModel
-
-        model_list = list(dict.fromkeys(str(m).strip() for m in models if str(m).strip()))
         cfg = (self.settings.get("llm", {}).get("local_multi_model", {}) or {})
         base_url = cfg.get("base_url", "http://127.0.0.1:11434/v1")
         timeout_s = float(cfg.get("timeout_s", 120))
-        max_workers = int(cfg.get("max_workers", min(3, max(1, len(model_list)))) )
+        max_workers = int(cfg.get("max_workers", 2))
         if self._local_multi_model is None or self._local_multi_model.base_url != base_url:
             self._local_multi_model = LocalMultiModel(
                 base_url=base_url,
                 timeout_s=timeout_s,
                 max_workers=max_workers,
             )
-        return self._local_multi_model.race(
+        return self._local_multi_model, cfg
+
+    def local_multi_enabled(self) -> bool:
+        return bool((self.settings.get("llm", {}).get("local_multi_model", {}) or {}).get("enabled", False))
+
+    def race_local(self, models=None, messages=None, *, temperature=None, max_tokens=None):
+        """Race multiple Ollama/local models with zero cloud fallback."""
+        engine, cfg = self._local_engine()
+        model_list = models or cfg.get("models") or list(self.get_models() or [])
+        if not model_list:
+            return []
+        return engine.race(
             model_list,
-            messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
+            messages or [],
+            temperature=float(cfg.get("temperature", 0.2) if temperature is None else temperature),
+            max_tokens=int(cfg.get("max_tokens", 2048) if max_tokens is None else max_tokens),
+        )
+
+    def race_local_and_judge(self, models=None, messages=None, *, system="", temperature=None, max_tokens=None):
+        """Run a local model race, then judge candidates using a local judge."""
+        engine, cfg = self._local_engine()
+        model_list = models or cfg.get("models") or list(self.get_models() or [])
+        if not model_list:
+            return None, []
+        judge_model = cfg.get("judge_model")
+        return engine.race_and_judge(
+            model_list,
+            messages or [],
+            judge_model=judge_model,
+            system=system,
+            temperature=float(cfg.get("temperature", 0.2) if temperature is None else temperature),
+            max_tokens=int(cfg.get("max_tokens", 2048) if max_tokens is None else max_tokens),
         )
 
     def _record(self, model: str, ok: bool, latency_ms: float, error: str | None = None):
