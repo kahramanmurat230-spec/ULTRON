@@ -85,6 +85,34 @@ class ModelRouter:
             attempts.append(fallback)
         return attempts[: max_retries + 1]
 
+    def _local_engine(self):
+        from app.core.local_multi_model import LocalMultiModel
+        cfg = (self.settings.get("llm", {}).get("local_multi_model", {}) or {})
+        base_url = cfg.get("base_url", "http://127.0.0.1:11434/v1")
+        timeout_s = float(cfg.get("timeout_s", 120))
+        max_workers = int(cfg.get("max_workers", 2))
+        if self._local_multi_model is None or self._local_multi_model.base_url != base_url:
+            self._local_multi_model = LocalMultiModel(
+                base_url=base_url,
+                timeout_s=timeout_s,
+                max_workers=max_workers,
+            )
+        return self._local_multi_model, cfg
+
+    def local_multi_enabled(self) -> bool:
+        return bool((self.settings.get("llm", {}).get("local_multi_model", {}) or {}).get("enabled", False))
+
+    def _finalize_with_local_race(self, messages):
+        if not self.local_multi_enabled():
+            return None
+        try:
+            chosen, _results = self.race_local_and_judge(messages=messages)
+            if chosen and chosen.ok and chosen.content:
+                return {"message": {"role": "assistant", "content": chosen.content}}
+        except Exception:
+            pass
+        return None
+
     def chat(self, task: str, messages, tools=None, max_retries: int = 1):
         models = list(self.get_models() or [])
         attempts = self._attempts(task, models, max_retries)
@@ -96,6 +124,15 @@ class ModelRouter:
             try:
                 res = self.brain.chat(messages, tools=tools, model=m)
                 self._record(m, True, (time.time() - t0) * 1000)
+                # Agent passes tools on every turn. If the model decided no tool
+                # is needed, hand the final answer to the local multi-model
+                # race/judge for a second opinion. Tool-call turns remain single
+                # model so execution semantics are deterministic.
+                msg = res.get("message", {}) if isinstance(res, dict) else {}
+                if self.local_multi_enabled() and not (msg.get("tool_calls") or []):
+                    finalized = self._finalize_with_local_race(messages)
+                    if finalized:
+                        return finalized
                 return res
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
@@ -125,23 +162,6 @@ class ModelRouter:
             raise ValueError("JSON yanıt alınamadı.")
         return json.loads(content[a:b + 1])
 
-    def _local_engine(self):
-        from app.core.local_multi_model import LocalMultiModel
-        cfg = (self.settings.get("llm", {}).get("local_multi_model", {}) or {})
-        base_url = cfg.get("base_url", "http://127.0.0.1:11434/v1")
-        timeout_s = float(cfg.get("timeout_s", 120))
-        max_workers = int(cfg.get("max_workers", 2))
-        if self._local_multi_model is None or self._local_multi_model.base_url != base_url:
-            self._local_multi_model = LocalMultiModel(
-                base_url=base_url,
-                timeout_s=timeout_s,
-                max_workers=max_workers,
-            )
-        return self._local_multi_model, cfg
-
-    def local_multi_enabled(self) -> bool:
-        return bool((self.settings.get("llm", {}).get("local_multi_model", {}) or {}).get("enabled", False))
-
     def race_local(self, models=None, messages=None, *, temperature=None, max_tokens=None):
         """Race multiple Ollama/local models with zero cloud fallback."""
         engine, cfg = self._local_engine()
@@ -161,11 +181,10 @@ class ModelRouter:
         model_list = models or cfg.get("models") or list(self.get_models() or [])
         if not model_list:
             return None, []
-        judge_model = cfg.get("judge_model")
         return engine.race_and_judge(
             model_list,
             messages or [],
-            judge_model=judge_model,
+            judge_model=cfg.get("judge_model"),
             system=system,
             temperature=float(cfg.get("temperature", 0.2) if temperature is None else temperature),
             max_tokens=int(cfg.get("max_tokens", 2048) if max_tokens is None else max_tokens),
