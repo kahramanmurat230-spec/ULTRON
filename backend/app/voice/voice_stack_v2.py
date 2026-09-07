@@ -208,6 +208,7 @@ class LiveVoiceV2:
         wake_cfg = settings.get("wake", {})
         self.wake = str(wake_cfg.get("keyword", settings.get("wake_word", "ultron"))).lower()
         self._whisper_model = None
+        self._whisper_info = None
         self.wake_manager = None
         self._utterance_lock = threading.Lock()
         self._barge_in_pending = False
@@ -228,6 +229,7 @@ class LiveVoiceV2:
             "state": self.state.value,
             "available": self.available,
             "wake": self.wake_manager.status() if self.wake_manager else None,
+            "whisper": self._whisper_info,
             "last_error": self.last_error,
             "vad": self.stack.vad_kind,
         }
@@ -273,11 +275,10 @@ class LiveVoiceV2:
     def _transcribe(self, pcm: bytes) -> str:
         import io
         import wave
-        from faster_whisper import WhisperModel
+        from app.voice.local_whisper import load_whisper
         if self._whisper_model is None:
-            self._whisper_model = WhisperModel(
-                self.settings.get("voice", {}).get("stt_model", "small"),
-                device="auto", compute_type="int8"
+            self._whisper_model, self._whisper_info = load_whisper(
+                self.settings.get("voice", {}).get("stt_model", "models/whisper-tiny")
             )
         buf = io.BytesIO()
         with wave.open(buf, "wb") as w:
@@ -300,7 +301,6 @@ class LiveVoiceV2:
             if not direct_barge_in and self.state not in (VoiceState.ARMED, VoiceState.SPEAKING):
                 return
             if not direct_barge_in:
-                # False means no wake detection. Never send non-wake audio to STT.
                 hit = self.wake_manager.process_chunk(pcm)
                 if not hit:
                     return
