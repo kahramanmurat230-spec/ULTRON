@@ -87,6 +87,20 @@ class ModelRouter:
                 if cfg.get("min_quality_score") is not None else float(scoring.get("min_quality_score", 0.0)),
         }
 
+    def evaluate_local_output(self, output, task=""):
+        """Evaluate an already-produced worker decision without another model call."""
+        engine, cfg = self._local_engine()
+        text = output if isinstance(output, str) else json.dumps(output, ensure_ascii=False, sort_keys=True)
+        score, dimensions = engine._score_candidate(text, task)
+        threshold = self._local_eval_options(cfg)["min_quality_score"]
+        return {
+            "score": score,
+            "dimensions": dimensions,
+            "threshold": threshold,
+            "passed": score >= threshold if threshold > 0 else True,
+            "mode": "local_heuristic",
+        }
+
     def chat(self, task, messages, tools=None, max_retries=1):
         models = list(self.get_models() or [])
         last_exc = None
@@ -98,7 +112,6 @@ class ModelRouter:
                 result = self.brain.chat(messages, tools=tools, model=model)
                 self._record(model, True, (time.time() - started) * 1000)
                 msg = result.get("message", {}) if isinstance(result, dict) else {}
-                # Tool-call turns stay deterministic. Final text turns are evaluated locally.
                 if self.local_multi_enabled() and not msg.get("tool_calls"):
                     chosen, _ = self.race_local_and_judge(messages=messages, task=task)
                     if chosen and chosen.content:
