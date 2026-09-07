@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, shell } = require('electron');
+const { app, BrowserWindow, dialog } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -9,22 +9,39 @@ function projectRoot() {
   return path.resolve(__dirname, '..');
 }
 
+function runtimeRoot() {
+  if (app.isPackaged) return path.join(process.resourcesPath, 'runtime');
+  return projectRoot();
+}
+
+function backendDir() {
+  return path.join(runtimeRoot(), 'backend');
+}
+
 function pythonCommand() {
-  const root = projectRoot();
-  const venvPython = path.join(root, 'backend', '.venv', 'Scripts', 'python.exe');
+  const venvPython = path.join(backendDir(), '.venv', 'Scripts', 'python.exe');
   if (fs.existsSync(venvPython)) return venvPython;
   return 'python';
 }
 
 function startBackend() {
-  const root = projectRoot();
-  const backendDir = path.join(root, 'backend');
+  const dir = backendDir();
+  if (!fs.existsSync(path.join(dir, 'server.py'))) {
+    throw new Error(`Backend bulunamadı: ${dir}`);
+  }
+
   backend = spawn(pythonCommand(), ['-B', 'server.py'], {
-    cwd: backendDir,
+    cwd: dir,
     windowsHide: true,
     stdio: 'ignore',
-    env: { ...process.env }
+    env: {
+      ...process.env,
+      ULTRON_WORKSPACE: app.isPackaged
+        ? path.join(app.getPath('userData'), 'workspace')
+        : (process.env.ULTRON_WORKSPACE || projectRoot())
+    }
   });
+
   backend.on('error', (err) => {
     dialog.showErrorBox('ULTRON Backend', `Backend başlatılamadı.\n\n${err.message}`);
   });
@@ -60,13 +77,13 @@ async function createWindow() {
 
   const ready = await waitForBackend();
   if (!ready) {
-    dialog.showErrorBox('ULTRON', 'ULTRON backend 20 saniye içinde hazır olmadı. Ollama ve Python ortamını kontrol edin.');
+    dialog.showErrorBox('ULTRON', 'ULTRON backend 20 saniye içinde hazır olmadı. Python ortamını ve Ollama\'yı kontrol edin.');
     return win;
   }
 
-  const indexFile = path.join(projectRoot(), 'frontend', 'dist', 'index.html');
+  const indexFile = path.join(runtimeRoot(), 'frontend', 'dist', 'index.html');
   if (!fs.existsSync(indexFile)) {
-    dialog.showErrorBox('ULTRON', 'Desktop arayüzü henüz build edilmemiş. Önce frontend\'i build edin.');
+    dialog.showErrorBox('ULTRON', 'Desktop arayüzü paket içinde bulunamadı. Installer build adımını tekrar çalıştırın.');
     return win;
   }
 
@@ -75,8 +92,16 @@ async function createWindow() {
 }
 
 app.whenReady().then(async () => {
-  startBackend();
-  await createWindow();
+  try {
+    fs.mkdirSync(path.join(app.getPath('userData'), 'workspace'), { recursive: true });
+    startBackend();
+    await createWindow();
+  } catch (err) {
+    dialog.showErrorBox('ULTRON', `ULTRON başlatılamadı.\n\n${err.message}`);
+    app.quit();
+    return;
+  }
+
   app.on('activate', async () => {
     if (BrowserWindow.getAllWindows().length === 0) await createWindow();
   });
