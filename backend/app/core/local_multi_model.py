@@ -139,6 +139,83 @@ class LocalMultiModel:
             ]
             return [future.result() for future in futures]
 
+    def judge(
+        self,
+        results: Iterable[LocalModelResult],
+        *,
+        judge_model: str,
+        system: str = "",
+        temperature: float = 0.1,
+        max_tokens: int = 2048,
+    ) -> LocalModelResult | None:
+        """Select the strongest successful candidate using another local model.
+
+        The judge request is also forced through the same localhost endpoint;
+        there is deliberately no remote fallback. The returned content is the
+        judge's final answer, not an instruction to execute tools.
+        """
+        successful = [r for r in results if r.ok and r.content]
+        if not successful:
+            return None
+        if len(successful) == 1:
+            return successful[0]
+        candidates = []
+        for idx, result in enumerate(successful, 1):
+            candidates.append(f"CANDIDATE {idx} [{result.model}]\n{result.content[:6000]}")
+        judge_messages = [
+            {
+                "role": "system",
+                "content": (system or "Sen ULTRON'un yerel cevap hakemisin. Türkçe yanıtı değerlendir; "
+                             "doğruluk, göreve uygunluk ve uygulanabilirlik açısından en iyi cevabı seç. "
+                             "Sadece seçtiğin cevabın kendisini döndür, aday numarası veya meta açıklama yazma."),
+            },
+            {"role": "user", "content": "\n\n".join(candidates)},
+        ]
+        started = time.perf_counter()
+        try:
+            payload = self._request(
+                "POST",
+                "/chat/completions",
+                {
+                    "model": judge_model,
+                    "messages": judge_messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                },
+            )
+            choices = payload.get("choices") or []
+            content = ((choices[0].get("message") or {}).get("content") or "").strip() if choices else ""
+            if not content:
+                return self.best_fastest(successful)
+            return LocalModelResult(
+                model=f"judge:{judge_model}",
+                ok=True,
+                content=content,
+                latency_ms=(time.perf_counter() - started) * 1000,
+            )
+        except Exception:
+            return self.best_fastest(successful)
+
+    def race_and_judge(
+        self,
+        models: Iterable[str],
+        messages: list[dict[str, Any]],
+        *,
+        judge_model: str | None = None,
+        system: str = "",
+        temperature: float = 0.2,
+        max_tokens: int = 2048,
+    ) -> tuple[LocalModelResult | None, list[LocalModelResult]]:
+        results = self.race(models, messages, temperature=temperature, max_tokens=max_tokens)
+        successful = [r for r in results if r.ok and r.content]
+        if not successful:
+            return None, results
+        if judge_model:
+            chosen = self.judge(successful, judge_model=judge_model, system=system, max_tokens=max_tokens)
+        else:
+            chosen = self.best_fastest(successful)
+        return chosen, results
+
     @staticmethod
     def best_fastest(results: Iterable[LocalModelResult]) -> LocalModelResult | None:
         successful = [r for r in results if r.ok and r.content]
