@@ -22,7 +22,9 @@ if errorlevel 1 goto :error
 cd ..
 
 echo [4/4] TAMAMLANDI.
-echo Installer: desktop\dist\ULTRON-Setup-1.0.0.exe
+echo Installer: desktop\dist\ULTRON-Setup-1.0.1.exe
+echo.
+echo Not: ULTRON local Python + Ollama ortamini kullanir; herhangi bir bulut API anahtari gerekmez.
 pause
 exit /b 0
 
