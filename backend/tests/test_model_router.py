@@ -63,7 +63,7 @@ def test_router_falls_back_to_primary_when_no_capability_match():
 def test_router_settings_override_honored_only_if_installed():
     st = {"llm": {"routing": {"vision": "llava:13b"}}}
     r = make_router(["llava:7b"], settings=st)
-    assert r.resolve(TaskType.VISION) == "llava:7b"  # override not installed -> ignored
+    assert r.resolve(TaskType.VISION) == "llava:7b"
     st2 = {"llm": {"routing": {"vision": "llava:7b"}}}
     r2 = make_router(["llava:7b", "x:1b"], settings=st2)
     assert r2.resolve(TaskType.VISION) == "llava:7b"
@@ -117,6 +117,16 @@ def test_health_report_structure():
     assert set(h["a:1b"]) >= {"ok", "calls", "failures"}
 
 
+def test_router_local_race_finalizes_tool_free_answer(monkeypatch):
+    settings = {"llm": {"local_multi_model": {"enabled": True, "models": ["a:1b", "b:1b"], "judge_model": "a:1b"}}}
+    r = make_router(["a:1b"], primary="a:1b", settings=settings)
+    calls = []
+    monkeypatch.setattr(r, "race_local_and_judge", lambda **kwargs: (
+        type("R", (), {"ok": True, "content": "judged"})(), []))
+    out = r.chat(TaskType.GENERAL, [{"role": "user", "content": "hi"}], tools=[{"type": "function"}])
+    assert out["message"]["content"] == "judged"
+
+
 # ---------------- PHASE 3: backoff + qwen ailesi yönlendirme ----------------
 def test_router_retry_backoff_before_fallback():
     import app.core.model_router as mr
@@ -133,8 +143,8 @@ def test_router_retry_backoff_before_fallback():
     r = mr.ModelRouter(b, {}, get_models=lambda: ["qwen3:8b", "qwen2.5-coder:7b"],
                        sleep=sleeps.append)
     out = r.ask(mr.TaskType.GENERAL, "ping")
-    assert out == "ok" and len(b.calls) == 2   # primary sonra fallback
-    assert sleeps == [0.5]                     # fallback öncesi backoff
+    assert out == "ok" and len(b.calls) == 2
+    assert sleeps == [0.5]
 
 
 def test_router_qwen_family_capabilities():
@@ -145,8 +155,8 @@ def test_router_qwen_family_capabilities():
                                                     "qwen3:4b", "qwen3:8b"])
     assert r.resolve(mr.TaskType.VISION) == "llava:7b"
     assert r.resolve(mr.TaskType.FAST) == "qwen3:4b"
-    assert r.resolve(mr.TaskType.CODING) == "qwen2.5-coder:7b"  # primary zaten coder
-    assert r.resolve(mr.TaskType.GENERAL) == "qwen2.5-coder:7b"  # GENERAL → primary (conservative)
+    assert r.resolve(mr.TaskType.CODING) == "qwen2.5-coder:7b"
+    assert r.resolve(mr.TaskType.GENERAL) == "qwen2.5-coder:7b"
 
 
 def test_fit_messages_context_limit():
@@ -156,6 +166,6 @@ def test_fit_messages_context_limit():
             {"role": "assistant", "content": "y" * 500},
             {"role": "user", "content": "z" * 100}]
     out = fit_messages(msgs, max_chars=700)
-    assert out[0]["role"] == "system"            # system korunur
-    assert out[-1]["content"].startswith("z")    # en yeni korunur
+    assert out[0]["role"] == "system"
+    assert out[-1]["content"].startswith("z")
     assert sum(len(m["content"]) for m in out) <= 700 or len(out) == 2
