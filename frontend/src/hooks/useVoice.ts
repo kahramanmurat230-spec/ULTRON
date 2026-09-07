@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
-import { sendMicState, sendVoiceCommand, sendVoiceReport } from "../lib/api";
+import { pushToTalk, sendMicState, sendVoiceCommand, sendVoiceReport } from "../lib/api";
 import { cancelSpeech } from "../lib/tts";
 import { audioLevel, getState, setState } from "../lib/store";
 
@@ -17,12 +17,12 @@ export function useVoice(): { toggle: () => void; supported: boolean; arm: () =>
   const audioRef = useRef<{ ctx: AudioContext; stream: MediaStream; raf: number } | null>(null);
   const wakeRef = useRef<{ rec: any; stream: MediaStream } | null>(null);
   const cmdMode = useRef(false);
-  const supported = typeof window !== "undefined" && !!speechRecognitionCtor();
+  const supported = true; // Electron/Windows PTT uses the local backend, not Web Speech.
 
   // Report real client capability to the backend once.
   useEffect(() => {
-    sendVoiceReport(supported, supported ? "Web Speech API present" : "browser lacks Web Speech API");
-  }, [supported]);
+    sendVoiceReport(true, "local push-to-talk backend");
+  }, []);
 
   const stopAudio = useCallback(() => {
     const a = audioRef.current;
@@ -49,7 +49,6 @@ export function useVoice(): { toggle: () => void; supported: boolean; arm: () =>
       setState({ mic: "unavailable" });
       return;
     }
-    // Real microphone amplitude for the waveform.
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const ctx = new AudioContext();
@@ -66,9 +65,8 @@ export function useVoice(): { toggle: () => void; supported: boolean; arm: () =>
           sum += v * v;
         }
         audioLevel.current = Math.min(1, Math.sqrt(sum / buf.length) * 3.2);
-        // V2 barge-in: real mic amplitude cuts TTS output instantly
         if (getState().ttsSpeaking && audioLevel.current > 0.15) cancelSpeech();
-        audioRef.current!.raf = requestAnimationFrame(tick);
+        if (audioRef.current) audioRef.current.raf = requestAnimationFrame(tick);
       };
       audioRef.current = { ctx, stream, raf: requestAnimationFrame(tick) };
     } catch {
@@ -93,7 +91,6 @@ export function useVoice(): { toggle: () => void; supported: boolean; arm: () =>
       setState({ mic: "error" });
     };
     rec.onend = () => {
-      // keep session alive while the user wants to listen
       if (getState().mic === "listening") {
         try {
           rec.start();
@@ -104,7 +101,7 @@ export function useVoice(): { toggle: () => void; supported: boolean; arm: () =>
     };
     try {
       rec.start();
-      sendMicState(true); // backend owns the agent state machine
+      sendMicState(true);
       setState({ mic: "listening" });
     } catch {
       stop();
@@ -112,12 +109,27 @@ export function useVoice(): { toggle: () => void; supported: boolean; arm: () =>
     }
   }, [stop]);
 
+  // Primary microphone action: true local push-to-talk turn.
   const toggle = useCallback(() => {
-    if (getState().mic === "listening") stop();
-    else void start();
-  }, [start, stop]);
+    if (getState().mic === "listening") {
+      stop();
+      return;
+    }
+    setState({ mic: "listening" });
+    void pushToTalk(6)
+      .then((result) => {
+        if (!result.ok) throw new Error(result.error ?? "PTT failed");
+      })
+      .catch((e) => {
+        setState({ mic: "error" });
+        console.error("ULTRON local PTT:", e);
+      })
+      .finally(() => {
+        setState({ mic: "idle" });
+        sendMicState(false);
+      });
+  }, [stop]);
 
-  // ---------------- continuous conversation loop (wake word ULTRON) -------
   const disarm = useCallback(() => {
     const w = wakeRef.current;
     if (w) {
@@ -131,7 +143,7 @@ export function useVoice(): { toggle: () => void; supported: boolean; arm: () =>
     }
     cmdMode.current = false;
     sendMicState(false);
-    setState({ voiceArmed: false, mic: getState().mic === "listening" ? "idle" : "idle" });
+    setState({ voiceArmed: false, mic: "idle" });
   }, []);
 
   const arm = useCallback(async () => {
@@ -151,7 +163,7 @@ export function useVoice(): { toggle: () => void; supported: boolean; arm: () =>
         if (!cmdMode.current) {
           const txt = String(last[0].transcript).toLowerCase();
           if (txt.includes("ultron")) {
-            cmdMode.current = true; // wake word heard → command window
+            cmdMode.current = true;
             sendMicState(true);
             setState({ mic: "listening" });
           }
