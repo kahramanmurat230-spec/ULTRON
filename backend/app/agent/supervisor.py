@@ -9,8 +9,8 @@ Workers are REAL subsystem adapters (no mocks):
   tests         -> project pytest run (subprocess, timeout-bounded)
   diagnostic    -> runtime.self_diagnostic() (real health scan)
   verification  -> output schema/sanity checks of previous workers
-  report        -> deterministic evidence report (LLM polish optional,
-                   only when a healthy local model is available)
+  report        -> deterministic evidence report (local multi-model polish optional,
+                   only when healthy local models are available)
 
 Workers execute inside the existing permission system: they only call
 safe/read-only tools; anything dangerous keeps requiring the normal
@@ -56,7 +56,6 @@ class CodeAnalysisWorker(Worker):
 
 
 class TestWorker(Worker):
-    # This is a production worker, not a pytest test class.
     __test__ = False
     id = "tests"
     label = "Project test suite"
@@ -152,12 +151,22 @@ class ReportWorker(Worker):
         if self.router is not None and self.llm_available():
             try:
                 from app.core.model_router import TaskType
-                polished = self.router.ask(
-                    TaskType.GENERAL,
-                    "Aşağıdaki görev raporunu Korean yok, Türkçe, ULTRON personasıyla (Boss hitabı) "
-                    "kısa ve net özetle:\n" + report[:3000])
-                if polished:
-                    report = polished.strip()
+                if self.router.local_multi_enabled():
+                    chosen, _results = self.router.race_local_and_judge(
+                        messages=[
+                            {"role": "system", "content": "Türkçe, kısa, net ve kanıta dayalı ULTRON raporu yaz. Boss diye hitap et. Gerçekleşmeyen bir işi yapılmış gibi gösterme."},
+                            {"role": "user", "content": report[:6000]},
+                        ],
+                        system="Rapor adaylarını doğruluk, açıklık ve kanıt kullanımı açısından değerlendir. En iyi raporu doğrudan döndür.",
+                    )
+                    if chosen and chosen.content:
+                        report = chosen.content.strip()
+                else:
+                    polished = self.router.ask(
+                        TaskType.GENERAL,
+                        "Aşağıdaki görev raporunu Türkçe, ULTRON personasıyla (Boss hitabı) kısa ve net özetle:\n" + report[:3000])
+                    if polished:
+                        report = polished.strip()
             except Exception:
                 pass
         return {"ok": True, "output": report}
