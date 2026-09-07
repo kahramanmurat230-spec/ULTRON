@@ -82,7 +82,7 @@ export const runTests = (quick: boolean) =>
 
 // ---- v16 memory management ----
 export const memoryV16 = () =>
-  req<{ rows: MemoryRow[]; kinds: Record<string, number }>("/api/memory/v16?limit=60");
+  req<{ rows: MemoryRow[]; kinds: Record<string, number> }>("/api/memory/v16?limit=60");
 export const memoryV16Add = (kind: string, text: string) => post("/api/memory/v16/add", { kind, text });
 export const memoryV16Delete = (id: number) => post("/api/memory/v16/delete", { id });
 export const memoryV16Clear = () => post("/api/memory/v16/clear");
