@@ -31,7 +31,7 @@
     "stt_model": "models/whisper-tiny",
     "tts": "piper-local",
     "piper_voice": "tr",
-    "piper_model": "data/voice/piper/tr_TR-ahmet-medium.onnx",
+    "piper_model": "data/voice/piper/tr_TR-fahrettin-medium.onnx",
     "piper_executable": "piper",
     "espeak_voice": "tr",
     "espeak_executable": "espeak-ng",
