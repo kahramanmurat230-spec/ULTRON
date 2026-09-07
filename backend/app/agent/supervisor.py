@@ -65,24 +65,18 @@ class ReportWorker(Worker):
             lines.append(f"CODE: {ca.get('files')} files · {ca.get('issues')} issues ({ca.get('high')} high) · {ca.get('duplicates')} dup · {ca.get('todo')} todo")
             lines += [f"  - {t.get('sev')}: {t.get('msg')} @ {t.get('file')}:{t.get('line')}" for t in ca.get("top", [])[:3]]
         tw = outputs.get("tests")
-        if tw:
-            lines.append(f"TESTS: rc={tw.get('returncode')} · {tw.get('summary')}")
+        if tw: lines.append(f"TESTS: rc={tw.get('returncode')} · {tw.get('summary')}")
         dg = outputs.get("diagnostic")
-        if dg:
-            lines.append(f"DIAGNOSTIC: {dg.get('overall')}")
+        if dg: lines.append(f"DIAGNOSTIC: {dg.get('overall')}")
         vf = outputs.get("verification")
-        if vf:
-            lines.append(f"VERIFICATION: {'PASS' if not vf.get('problems') else 'FAIL — ' + '; '.join(vf['problems'])}")
-        # Explicit evidence/next-action section prevents the final report from
-        # claiming work that the supervisor did not actually execute.
+        if vf: lines.append(f"VERIFICATION: {'PASS' if not vf.get('problems') else 'FAIL — ' + '; '.join(vf['problems'])}")
         lines.append("EVIDENCE: " + ("verified supervisor outputs are listed above." if vf and not vf.get("problems") else "verification did not fully pass; inspect the listed problems."))
         lines.append("NEXT: " + ("no mandatory corrective action from this run." if vf and not vf.get("problems") else "fix verification failures before treating the run as complete."))
         return "\n".join(lines)
 
     def run(self, goal, args, ctx):
         outputs = ctx.get("outputs", {})
-        report = self._base_report(goal, outputs)
-        ctx["final_report"] = report
+        report = self._base_report(goal, outputs); ctx["final_report"] = report
         if self.router is not None and self.llm_available() and self.router.local_multi_enabled():
             try:
                 chosen, results = self.router.race_local_and_judge(
@@ -93,21 +87,16 @@ class ReportWorker(Worker):
                     system="Aday raporlarını doğruluk, açıklık, eksiksizlik ve kanıt kullanımı açısından değerlendir. En iyi raporu doğrudan döndür; yeni olgu uydurma.",
                     task="report",
                 )
-                if chosen and chosen.content:
-                    report = chosen.content.strip()
-                    ctx["final_report"] = report
-                ctx["local_evaluation"] = {
-                    "winner": chosen.model if chosen else None,
-                    "winner_score": chosen.score if chosen else None,
-                    "candidates": [r.to_dict() for r in results],
-                }
-            except Exception as exc:  # local evaluation is enhancement; deterministic report remains valid
+                if chosen and chosen.content: report = chosen.content.strip(); ctx["final_report"] = report
+                ctx["local_evaluation"] = {"winner": chosen.model if chosen else None, "winner_score": chosen.score if chosen else None, "candidates": [r.to_dict() for r in results]}
+            except Exception as exc:
                 ctx["local_evaluation"] = {"winner": None, "winner_score": None, "error": str(exc)[:200], "candidates": []}
         return {"ok": True, "output": report}
 
 
 class SupervisorAgent:
     def __init__(self, task_engine, workers, event_cb=None): self.engine = task_engine; self.workers = workers; self.event_cb = event_cb
+
     def plan(self, goal):
         g = goal.lower(); steps = []
         if any(k in g for k in ("teşhis", "diagnostik", "diagnostic", "kendini kontrol", "sağlık")): steps.append({"label":"self diagnostic","worker":"diagnostic","args":{}})
@@ -116,17 +105,46 @@ class SupervisorAgent:
         if not steps: steps.append({"label":"static analysis","worker":"code_analysis","args":{}})
         steps += [{"label":"verify outputs","worker":"verification","args":{}}, {"label":"final evaluated report","worker":"report","args":{}}]
         return steps
+
     async def submit(self, goal, budgets=None, spawn=True):
         task = self.engine.create(goal, kind="supervisor", steps=self.plan(goal), budgets=budgets)
         if spawn: self.engine.spawn(task["id"], self._runner)
         return task
+
+    def _evaluate_worker_output(self, task, step, result, ctx):
+        """Apply the local quality gate to a successful worker decision."""
+        router = getattr(self.workers.get("report"), "router", None)
+        if router is None or not router.local_multi_enabled() or not result.get("ok"):
+            return result
+        # Verification/report have their own semantics and are evaluated separately.
+        if step.get("worker") in ("verification", "report"):
+            return result
+        evaluation = router.evaluate_local_output(result.get("output"), task="worker:" + step.get("worker", "general"))
+        ctx.setdefault("step_evaluations", {})[step.get("worker", "worker")] = evaluation
+        result["quality_gate"] = evaluation
+        if not evaluation.get("passed", True):
+            result = dict(result)
+            result["ok"] = False
+            result["error"] = f"local quality gate failed: {evaluation.get('score')} < {evaluation.get('threshold')}"
+        return result
+
     async def _runner(self, task, step, ctx):
         worker = self.workers.get(step["worker"])
         if worker is None: return {"ok":False,"output":{"error":f"unknown worker {step['worker']}"}}
-        ctx.setdefault("outputs", {}); result = worker.run(task["goal"], step.get("args", {}), ctx)
-        if not result.get("ok") and worker.alt and not step.get("_alt_used"):
-            if self.event_cb: self.event_cb({"task_id":task["id"],"component":"supervisor","status":"REPLAN","detail":f"{worker.id} failed -> alternative {worker.alt}"})
-            step["_alt_used"] = True; alt = self.workers.get(worker.alt)
-            if alt is not None: result = alt.run(task["goal"], step.get("args", {}), ctx)
-        if result.get("ok"): ctx["outputs"][worker.id] = result.get("output")
+        ctx.setdefault("outputs", {})
+        result = worker.run(task["goal"], step.get("args", {}), ctx)
+        result = self._evaluate_worker_output(task, step, result, ctx)
+
+        # A failed worker or a quality-gated worker gets one automatic replan/retry.
+        if not result.get("ok") and not step.get("_replan_used"):
+            step["_replan_used"] = True
+            if self.event_cb:
+                self.event_cb({"task_id":task["id"],"component":"supervisor","status":"REPLAN","detail":f"{worker.id} failed or quality gate rejected; rebuilding worker step"})
+            replanned = next((s for s in self.plan(task["goal"]) if s.get("worker") == worker.id), None)
+            retry_args = dict((replanned or step).get("args", {})); retry_args["replan"] = True
+            result = worker.run(task["goal"], retry_args, ctx)
+            result = self._evaluate_worker_output(task, {**step, "args": retry_args}, result, ctx)
+
+        if result.get("ok"):
+            ctx["outputs"][worker.id] = result.get("output")
         return result
