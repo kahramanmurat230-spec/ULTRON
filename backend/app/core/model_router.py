@@ -10,7 +10,8 @@ without reason):
   4. otherwise the primary model (never None; the caller handles offline)
 
 Adds: per-model health tracking, one retry with a fallback model,
-structured-output helper (ask_json) and a context-budget fitter.
+structured-output helper (ask_json), context-budget fitting, and an explicit
+local-only multi-model race that cannot use remote endpoints.
 """
 import json
 import re
@@ -53,10 +54,10 @@ class ModelRouter:
         self.brain = brain
         self.settings = settings or {}
         self.get_models = get_models or (lambda: [])
-        # PHASE 3: fallback öncesi backoff (testlerde enjekte edilebilir)
         self.backoff_s = float((settings or {}).get("llm", {}).get("retry_backoff_s", 0.5))
         self._sleep = sleep or time.sleep
         self._health: dict[str, ModelHealth] = {}
+        self._local_multi_model = None
 
     # ------------------------------------------------------------ resolve
     def resolve(self, task: str, available_models=None) -> str:
@@ -93,7 +94,7 @@ class ModelRouter:
         last_exc = None
         for i, m in enumerate(attempts):
             if i:
-                self._sleep(self.backoff_s)  # retry backoff before fallback
+                self._sleep(self.backoff_s)
             t0 = time.time()
             try:
                 res = self.brain.chat(messages, tools=tools, model=m)
@@ -128,6 +129,32 @@ class ModelRouter:
             raise ValueError("JSON yanıt alınamadı.")
         return json.loads(content[a:b + 1])
 
+    # ------------------------------------------------------------ local race
+    def race_local(self, models, messages, *, temperature: float = 0.2, max_tokens: int = 2048):
+        """Race multiple Ollama/local models with zero cloud fallback.
+
+        This is intentionally separate from chat(): enabling a local race can
+        never cause a failed local request to fall back to a paid provider.
+        """
+        from app.core.local_multi_model import LocalMultiModel
+
+        cfg = (self.settings.get("llm", {}).get("local_multi_model", {}) or {})
+        base_url = cfg.get("base_url", "http://127.0.0.1:11434/v1")
+        timeout_s = float(cfg.get("timeout_s", 120))
+        max_workers = int(cfg.get("max_workers", min(3, max(1, len(list(models))))))
+        if self._local_multi_model is None or self._local_multi_model.base_url != base_url:
+            self._local_multi_model = LocalMultiModel(
+                base_url=base_url,
+                timeout_s=timeout_s,
+                max_workers=max_workers,
+            )
+        return self._local_multi_model.race(
+            models,
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
     # ------------------------------------------------------------ health
     def _record(self, model: str, ok: bool, latency_ms: float, error: str | None = None):
         h = self._health.setdefault(model, ModelHealth())
@@ -158,7 +185,7 @@ def fit_messages(messages, max_chars: int = 24000):
     rest = messages[1:] if system else messages
     budget = max_chars - len(system.get("content") or "" if system else "")
     kept: list = []
-    for m in reversed(rest):  # newest first
+    for m in reversed(rest):
         cost = len(m.get("content") or "")
         if budget - cost < 0 and kept:
             break
