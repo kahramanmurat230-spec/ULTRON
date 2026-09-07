@@ -12,11 +12,14 @@ import type {
   ToolStatus,
 } from "./types";
 
+// Browser/Vite uses same-origin API paths; Electron production runs from file://.
+const API_BASE = location.protocol === "file:" ? "http://127.0.0.1:8000" : "";
+
 async function req<T>(path: string, init?: RequestInit, timeoutMs = 6000): Promise<T> {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeoutMs);
   try {
-    const res = await fetch(path, { ...init, signal: ctl.signal });
+    const res = await fetch(`${API_BASE}${path}`, { ...init, signal: ctl.signal });
     if (!res.ok) {
       let detail = `HTTP ${res.status}`;
       try {
@@ -79,7 +82,7 @@ export const runTests = (quick: boolean) =>
 
 // ---- v16 memory management ----
 export const memoryV16 = () =>
-  req<{ rows: MemoryRow[]; kinds: Record<string, number> }>("/api/memory/v16?limit=60");
+  req<{ rows: MemoryRow[]; kinds: Record<string, number }>("/api/memory/v16?limit=60");
 export const memoryV16Add = (kind: string, text: string) => post("/api/memory/v16/add", { kind, text });
 export const memoryV16Delete = (id: number) => post("/api/memory/v16/delete", { id });
 export const memoryV16Clear = () => post("/api/memory/v16/clear");
@@ -173,8 +176,9 @@ export function connectWS(): void {
   if (closedByUser) return;
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
   const proto = location.protocol === "https:" ? "wss://" : "ws://";
+  const host = location.protocol === "file:" ? "127.0.0.1:8000" : location.host;
   try {
-    ws = new WebSocket(proto + location.host + "/ws");
+    ws = new WebSocket(proto + host + "/ws");
   } catch {
     scheduleReconnect();
     return;
