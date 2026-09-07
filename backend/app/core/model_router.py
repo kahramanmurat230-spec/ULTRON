@@ -14,7 +14,6 @@ structured-output helper (ask_json), context-budget fitting, and an explicit
 local-only multi-model race that cannot use remote endpoints.
 """
 import json
-import re
 import time
 from dataclasses import dataclass, field
 
@@ -59,7 +58,6 @@ class ModelRouter:
         self._health: dict[str, ModelHealth] = {}
         self._local_multi_model = None
 
-    # ------------------------------------------------------------ resolve
     def resolve(self, task: str, available_models=None) -> str:
         models = list(available_models) if available_models is not None else list(self.get_models() or [])
         primary = self.brain.model
@@ -77,7 +75,6 @@ class ModelRouter:
                 return m
         return primary
 
-    # ------------------------------------------------------------ chat
     def _attempts(self, task: str, models, max_retries: int = 1) -> list[str]:
         primary = self.resolve(task, models)
         general = self.resolve(TaskType.GENERAL, models)
@@ -122,26 +119,21 @@ class ModelRouter:
         raise last_exc
 
     def ask_json(self, task: str, prompt: str, system: str = "") -> dict:
-        """Structured output: ask + extract the first JSON object from text."""
         content = self.ask(task, prompt, system=system)
         a, b = content.find("{"), content.rfind("}")
         if a < 0 or b <= a:
             raise ValueError("JSON yanıt alınamadı.")
         return json.loads(content[a:b + 1])
 
-    # ------------------------------------------------------------ local race
     def race_local(self, models, messages, *, temperature: float = 0.2, max_tokens: int = 2048):
-        """Race multiple Ollama/local models with zero cloud fallback.
-
-        This is intentionally separate from chat(): enabling a local race can
-        never cause a failed local request to fall back to a paid provider.
-        """
+        """Race multiple Ollama/local models with zero cloud fallback."""
         from app.core.local_multi_model import LocalMultiModel
 
+        model_list = list(dict.fromkeys(str(m).strip() for m in models if str(m).strip()))
         cfg = (self.settings.get("llm", {}).get("local_multi_model", {}) or {})
         base_url = cfg.get("base_url", "http://127.0.0.1:11434/v1")
         timeout_s = float(cfg.get("timeout_s", 120))
-        max_workers = int(cfg.get("max_workers", min(3, max(1, len(list(models))))))
+        max_workers = int(cfg.get("max_workers", min(3, max(1, len(model_list)))) )
         if self._local_multi_model is None or self._local_multi_model.base_url != base_url:
             self._local_multi_model = LocalMultiModel(
                 base_url=base_url,
@@ -149,13 +141,12 @@ class ModelRouter:
                 max_workers=max_workers,
             )
         return self._local_multi_model.race(
-            models,
+            model_list,
             messages,
             temperature=temperature,
             max_tokens=max_tokens,
         )
 
-    # ------------------------------------------------------------ health
     def _record(self, model: str, ok: bool, latency_ms: float, error: str | None = None):
         h = self._health.setdefault(model, ModelHealth())
         h.calls += 1
@@ -171,11 +162,7 @@ class ModelRouter:
 
 
 def fit_messages(messages, max_chars: int = 24000):
-    """Fit a message list into a char budget (~4 chars/token heuristic).
-
-    Keeps the system prompt (first message) and the most recent messages;
-    drops the oldest non-system messages first. Never returns an empty list
-    unless the input is empty."""
+    """Fit messages into a character budget (~4 chars/token heuristic)."""
     if not messages:
         return []
     total = sum(len(m.get("content") or "") for m in messages)
@@ -183,7 +170,7 @@ def fit_messages(messages, max_chars: int = 24000):
         return list(messages)
     system = messages[0] if messages[0].get("role") == "system" else None
     rest = messages[1:] if system else messages
-    budget = max_chars - len(system.get("content") or "" if system else "")
+    budget = max_chars - (len(system.get("content") or "") if system else 0)
     kept: list = []
     for m in reversed(rest):
         cost = len(m.get("content") or "")
