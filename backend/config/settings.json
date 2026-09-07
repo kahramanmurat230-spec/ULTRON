@@ -13,6 +13,17 @@
       "fast": "qwen3:4b",
       "general": "qwen3:8b",
       "note": "sadece kurulu modeller kullanilir; router gereksiz model degistirmez"
+    },
+    "local_multi_model": {
+      "enabled": true,
+      "base_url": "http://127.0.0.1:11434/v1",
+      "models": ["qwen3:4b", "qwen2.5-coder:7b"],
+      "judge_model": "qwen3:4b",
+      "timeout_s": 180,
+      "max_workers": 2,
+      "temperature": 0.2,
+      "max_tokens": 2048,
+      "note": "Yerel G0DM0D3-benzeri yarış; bulut/OpenRouter/Claude/OpenAI fallback yok."
     }
   },
   "voice": {
@@ -64,7 +75,7 @@
   "persona_guard_mode": "reframe",
   "voiceprint_lock_enabled": false,
   "voiceprint_threshold": 0.75,
-  "sovereign_mode": false,
+  "sovereign_mode": true,
   "vision_enabled": false,
   "vision_targets": ["code", "vscode", "terminal", "pycharm", "chrome", "powershell", "cmd"],
   "vision_blacklist": ["password", "banka", "bank", "login", "private", "şifre", "cüzdan", "wallet"],
