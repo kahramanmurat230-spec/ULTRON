@@ -1,18 +1,4 @@
-"""Model abstraction + capability registry + router with fallback.
-
-Task types: GENERAL / CODING / VISION / FAST.
-
-Routing rules (deliberately conservative — the router must NOT switch models
-without reason):
-  1. explicit settings override (llm.routing.<task>) — only if installed
-  2. the configured primary model, when its name matches the task capability
-  3. the first INSTALLED model whose capability matches the task
-  4. otherwise the primary model (never None; the caller handles offline)
-
-Adds: per-model health tracking, one retry with a fallback model,
-structured-output helper (ask_json), context-budget fitting, and an explicit
-local-only multi-model race that cannot use remote endpoints.
-"""
+"""Model abstraction, capability routing, local multi-model evaluation and health."""
 import json
 import time
 from dataclasses import dataclass, field
@@ -43,9 +29,7 @@ class ModelHealth:
 
 
 def model_matches(model: str, task: str) -> bool:
-    m = (model or "").lower()
-    hints = CAPABILITY_HINTS.get(task, ())
-    return any(h in m for h in hints)
+    return any(h in (model or "").lower() for h in CAPABILITY_HINTS.get(task, ()))
 
 
 class ModelRouter:
@@ -53,7 +37,7 @@ class ModelRouter:
         self.brain = brain
         self.settings = settings or {}
         self.get_models = get_models or (lambda: [])
-        self.backoff_s = float((settings or {}).get("llm", {}).get("retry_backoff_s", 0.5))
+        self.backoff_s = float(self.settings.get("llm", {}).get("retry_backoff_s", 0.5))
         self._sleep = sleep or time.sleep
         self._health: dict[str, ModelHealth] = {}
         self._local_multi_model = None
@@ -66,161 +50,132 @@ class ModelRouter:
         override = (self.settings.get("llm", {}).get("routing", {}) or {}).get(task.lower())
         if override and override in models:
             return override
-        if len(models) == 1:
-            return models[0]
-        if task == TaskType.GENERAL or model_matches(primary, task):
-            return primary
-        for m in models:
-            if m != primary and model_matches(m, task):
-                return m
+        if len(models) == 1 or task == TaskType.GENERAL or model_matches(primary, task):
+            return models[0] if len(models) == 1 else primary
+        for model in models:
+            if model != primary and model_matches(model, task):
+                return model
         return primary
 
-    def _attempts(self, task: str, models, max_retries: int = 1) -> list[str]:
+    def _attempts(self, task, models, max_retries=1):
         primary = self.resolve(task, models)
         general = self.resolve(TaskType.GENERAL, models)
         others = [m for m in models if m not in (primary, general)]
         fallback = general if general != primary else (others[0] if others else primary)
-        attempts = [primary]
-        if fallback != primary:
-            attempts.append(fallback)
-        return attempts[: max_retries + 1]
+        return [primary] + ([fallback] if fallback != primary else [])[:max_retries]
 
     def _local_engine(self):
         from app.core.local_multi_model import LocalMultiModel
-        cfg = (self.settings.get("llm", {}).get("local_multi_model", {}) or {})
+        cfg = self.settings.get("llm", {}).get("local_multi_model", {}) or {}
         base_url = cfg.get("base_url", "http://127.0.0.1:11434/v1")
-        timeout_s = float(cfg.get("timeout_s", 120))
-        max_workers = int(cfg.get("max_workers", 2))
         if self._local_multi_model is None or self._local_multi_model.base_url != base_url:
             self._local_multi_model = LocalMultiModel(
                 base_url=base_url,
-                timeout_s=timeout_s,
-                max_workers=max_workers,
+                timeout_s=float(cfg.get("timeout_s", 120)),
+                max_workers=int(cfg.get("max_workers", 2)),
             )
         return self._local_multi_model, cfg
 
-    def local_multi_enabled(self) -> bool:
+    def local_multi_enabled(self):
         return bool((self.settings.get("llm", {}).get("local_multi_model", {}) or {}).get("enabled", False))
 
-    def _finalize_with_local_race(self, messages):
-        if not self.local_multi_enabled():
-            return None
-        try:
-            chosen, _results = self.race_local_and_judge(messages=messages)
-            if chosen and chosen.ok and chosen.content:
-                return {"message": {"role": "assistant", "content": chosen.content}}
-        except Exception:
-            pass
-        return None
-
-    def chat(self, task: str, messages, tools=None, max_retries: int = 1):
+    def chat(self, task, messages, tools=None, max_retries=1):
         models = list(self.get_models() or [])
-        attempts = self._attempts(task, models, max_retries)
         last_exc = None
-        for i, m in enumerate(attempts):
+        for i, model in enumerate(self._attempts(task, models, max_retries)):
             if i:
                 self._sleep(self.backoff_s)
-            t0 = time.time()
+            started = time.time()
             try:
-                res = self.brain.chat(messages, tools=tools, model=m)
-                self._record(m, True, (time.time() - t0) * 1000)
-                # Agent passes tools on every turn. If the model decided no tool
-                # is needed, hand the final answer to the local multi-model
-                # race/judge for a second opinion. Tool-call turns remain single
-                # model so execution semantics are deterministic.
-                msg = res.get("message", {}) if isinstance(res, dict) else {}
-                if self.local_multi_enabled() and not (msg.get("tool_calls") or []):
-                    finalized = self._finalize_with_local_race(messages)
-                    if finalized:
-                        return finalized
-                return res
-            except Exception as exc:  # noqa: BLE001
+                result = self.brain.chat(messages, tools=tools, model=model)
+                self._record(model, True, (time.time() - started) * 1000)
+                msg = result.get("message", {}) if isinstance(result, dict) else {}
+                # Tool-call turns stay deterministic. Final text turns are evaluated locally.
+                if self.local_multi_enabled() and not msg.get("tool_calls"):
+                    chosen, _ = self.race_local_and_judge(messages=messages)
+                    if chosen and chosen.content:
+                        return {"message": {"role": "assistant", "content": chosen.content}}
+                return result
+            except Exception as exc:
                 last_exc = exc
-                self._record(m, False, (time.time() - t0) * 1000, str(exc))
+                self._record(model, False, (time.time() - started) * 1000, str(exc))
         raise last_exc
 
-    def ask(self, task: str, prompt: str, system: str = "") -> str:
+    def ask(self, task, prompt, system=""):
+        if self.local_multi_enabled():
+            chosen, _ = self.race_local_and_judge(
+                messages=([{"role": "system", "content": system}] if system else []) +
+                         [{"role": "user", "content": prompt}],
+                system=system,
+                task=task,
+            )
+            if chosen and chosen.content:
+                return chosen.content
         models = list(self.get_models() or [])
         last_exc = None
-        for i, m in enumerate(self._attempts(task, models)):
+        for i, model in enumerate(self._attempts(task, models)):
             if i:
                 self._sleep(self.backoff_s)
-            t0 = time.time()
+            started = time.time()
             try:
-                out = self.brain.ask(prompt, system=system, model=m)
-                self._record(m, True, (time.time() - t0) * 1000)
+                out = self.brain.ask(prompt, system=system, model=model)
+                self._record(model, True, (time.time() - started) * 1000)
                 return out
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 last_exc = exc
-                self._record(m, False, (time.time() - t0) * 1000, str(exc))
+                self._record(model, False, (time.time() - started) * 1000, str(exc))
         raise last_exc
 
-    def ask_json(self, task: str, prompt: str, system: str = "") -> dict:
+    def ask_json(self, task, prompt, system=""):
         content = self.ask(task, prompt, system=system)
         a, b = content.find("{"), content.rfind("}")
         if a < 0 or b <= a:
             raise ValueError("JSON yanıt alınamadı.")
         return json.loads(content[a:b + 1])
 
-    def race_local(self, models=None, messages=None, *, temperature=None, max_tokens=None):
-        """Race multiple Ollama/local models with zero cloud fallback."""
+    def race_local(self, models=None, messages=None, *, temperature=None, max_tokens=None, task=""):
         engine, cfg = self._local_engine()
-        model_list = models or cfg.get("models") or list(self.get_models() or [])
-        if not model_list:
+        models = models or cfg.get("models") or list(self.get_models() or [])
+        if not models:
             return []
-        return engine.race(
-            model_list,
-            messages or [],
-            temperature=float(cfg.get("temperature", 0.2) if temperature is None else temperature),
-            max_tokens=int(cfg.get("max_tokens", 2048) if max_tokens is None else max_tokens),
-        )
+        return engine.score_results(engine.race(
+            models, messages or [],
+            temperature=float(cfg.get("temperature", .2) if temperature is None else temperature),
+            max_tokens=int(cfg.get("max_tokens", 2048) if max_tokens is None else max_tokens)), task)
 
-    def race_local_and_judge(self, models=None, messages=None, *, system="", temperature=None, max_tokens=None):
-        """Run a local model race, then judge candidates using a local judge."""
+    def race_local_and_judge(self, models=None, messages=None, *, system="", temperature=None, max_tokens=None, task=""):
         engine, cfg = self._local_engine()
-        model_list = models or cfg.get("models") or list(self.get_models() or [])
-        if not model_list:
+        models = models or cfg.get("models") or list(self.get_models() or [])
+        if not models:
             return None, []
         return engine.race_and_judge(
-            model_list,
-            messages or [],
-            judge_model=cfg.get("judge_model"),
-            system=system,
-            temperature=float(cfg.get("temperature", 0.2) if temperature is None else temperature),
-            max_tokens=int(cfg.get("max_tokens", 2048) if max_tokens is None else max_tokens),
-        )
+            models, messages or [], judge_model=cfg.get("judge_model"), system=system, task=task,
+            temperature=float(cfg.get("temperature", .2) if temperature is None else temperature),
+            max_tokens=int(cfg.get("max_tokens", 2048) if max_tokens is None else max_tokens))
 
-    def _record(self, model: str, ok: bool, latency_ms: float, error: str | None = None):
-        h = self._health.setdefault(model, ModelHealth())
-        h.calls += 1
-        h.ok = ok
-        h.last_latency_ms = round(latency_ms, 1)
-        h.last_used = time.time()
+    def _record(self, model, ok, latency_ms, error=None):
+        health = self._health.setdefault(model, ModelHealth())
+        health.calls += 1; health.ok = ok; health.last_latency_ms = round(latency_ms, 1); health.last_used = time.time()
         if not ok:
-            h.failures += 1
-            h.last_error = (error or "")[:200]
+            health.failures += 1; health.last_error = (error or "")[:200]
 
-    def health(self) -> dict:
-        return {m: vars(h) for m, h in self._health.items()}
+    def health(self):
+        return {model: vars(h) for model, h in self._health.items()}
 
 
-def fit_messages(messages, max_chars: int = 24000):
-    """Fit messages into a character budget (~4 chars/token heuristic)."""
+def fit_messages(messages, max_chars=24000):
     if not messages:
         return []
-    total = sum(len(m.get("content") or "") for m in messages)
-    if total <= max_chars:
+    if sum(len(m.get("content") or "") for m in messages) <= max_chars:
         return list(messages)
     system = messages[0] if messages[0].get("role") == "system" else None
     rest = messages[1:] if system else messages
     budget = max_chars - (len(system.get("content") or "") if system else 0)
-    kept: list = []
-    for m in reversed(rest):
-        cost = len(m.get("content") or "")
+    kept = []
+    for message in reversed(rest):
+        cost = len(message.get("content") or "")
         if budget - cost < 0 and kept:
             break
-        budget -= cost
-        kept.append(m)
+        budget -= cost; kept.append(message)
     kept.reverse()
-    out = ([system] if system else []) + kept
-    return out or ([system] if system else list(messages[-1:]))
+    return ([system] if system else []) + kept
