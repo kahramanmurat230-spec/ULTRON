@@ -1,4 +1,4 @@
-import { getState, setState } from "./store";
+import { getState, pushChat, setState } from "./store";
 import { cancelSpeech, speak } from "./tts";
 import type { MemoryRow, PatchProposal, TestEvent } from "./types";
 import type {
@@ -53,8 +53,11 @@ export const getRecentActivity = () => req<ActivityItem[]>("/api/activity");
 export const getNotifications = () => req<NotificationItem[]>("/api/notifications");
 export const getConfig = () => req<Config>("/api/config");
 
-export const executeCommand = (text: string, approved = false) =>
-  post("/api/agent/command", { text, approved });
+export const executeCommand = (text: string, approved = false) => {
+  // Echo the operator's typed command into the terminal console (left panel).
+  pushChat("user", text);
+  return post("/api/agent/command", { text, approved });
+};
 export const getAudit = () => req<string[]>("/api/audit");
 
 // ---- code intelligence / codegen / tests ----
@@ -88,9 +91,18 @@ export const memoryV16Delete = (id: number) => post("/api/memory/v16/delete", { 
 export const memoryV16Clear = () => post("/api/memory/v16/clear");
 export const memoryV16Search = (q: string) =>
   req<{ score: number; kind: string; content: string }[]>(`/api/memory/v16/search?q=${encodeURIComponent(q)}`);
-export const sendVoiceCommand = (text: string) => post("/api/agent/command", { text });
-export const pushToTalk = (seconds = 6.0) =>
-  post("/api/voice/ptt", { seconds }, 120000);
+export const sendVoiceCommand = (text: string) => {
+  // Web-Speech transcript path → echo the spoken command into the console.
+  pushChat("user", text);
+  return post("/api/agent/command", { text });
+};
+export const pushToTalk = async (seconds = 6.0) => {
+  // Local push-to-talk turn (Whisper STT). The backend returns the recognized
+  // transcript in `text`; echo it into the terminal console as the operator line.
+  const r = await post("/api/voice/ptt", { seconds }, 120000) as { ok: boolean; error?: string; text?: string };
+  if (r.ok && typeof r.text === "string") pushChat("user", r.text);
+  return r;
+};
 export const captureScreen = () => post("/api/actions/screenshot");
 export const openBrowser = () => post("/api/actions/browser");
 export const systemCheck = () => post("/api/actions/system-check");
@@ -145,7 +157,11 @@ function handle(msg: WireMessage): void {
     case "agent": {
       const ev = { ts: msg.ts as number, state: msg.state as AgentState, message: msg.message as string | undefined };
       setState({ agentState: ev.state, agentEvents: [...s.agentEvents, ev].slice(-60) });
-      if ((ev.state === "DONE" || ev.state === "ERROR") && ev.message) void speak(ev.message);
+      if ((ev.state === "DONE" || ev.state === "ERROR") && ev.message) {
+        // Final agent reply → speak it and echo it into the terminal console.
+        pushChat("ultron", ev.message);
+        void speak(ev.message);
+      }
       break;
     }
     case "patch": {
@@ -166,9 +182,12 @@ function handle(msg: WireMessage): void {
     case "barge_in":
       cancelSpeech();
       break;
-    case "proactive_speech":
-      speak(String(msg.text ?? ""));
+    case "proactive_speech": {
+      const t = String(msg.text ?? "");
+      pushChat("ultron", t);
+      speak(t);
       break;
+    }
     default:
       break;
   }

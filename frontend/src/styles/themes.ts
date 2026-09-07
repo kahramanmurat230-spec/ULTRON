@@ -2,7 +2,7 @@
 export type ThemeName = "CRIMSON" | "CYAN" | "PURPLE" | "HYBRID";
 
 export const THEMES: Record<Exclude<ThemeName, "HYBRID">, { red: string; cyan: string }> = {
-  CRIMSON: { red: "#ff1e42", cyan: "#38e1ff" },   // Ultron klasik: titanyum + neon kızıl
+  CRIMSON: { red: "#ff1a1a", cyan: "#38e1ff" },   // Ultron klasik: titanyum + neon kızıl
   CYAN: { red: "#00f0ff", cyan: "#4d7cff" },      // Stark Jarvis: lacivert + elektrik cyan
   PURPLE: { red: "#bc13fe", cyan: "#7a5cff" },    // Void cyberpunk: obsidyen + plazma moru
 };

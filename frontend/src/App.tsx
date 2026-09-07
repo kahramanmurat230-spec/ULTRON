@@ -1,18 +1,20 @@
 import { Layers, Settings } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useVoice } from "./hooks/useVoice";
 import { connectWS } from "./lib/api";
 import { setState, useApp } from "./lib/store";
 import { applyTheme, saveTheme } from "./styles/themes";
-import { CommandCenter } from "./components/CommandCenter";
-import { HoloHead3D } from "./components/HoloHead3D";
+import { ParticleSphere } from "./components/ParticleSphere";
+import { TerminalChat } from "./components/TerminalChat";
+import { PTTBar } from "./components/PTTBar";
 import { Drawer } from "./components/Drawer";
 import { Modals } from "./components/Modals";
 
 /**
- * ULTRON V12.3 — Cinematic Void HUD.
- * No panels, no grids: obsidian void + 3D HoloHead + reactive waveform +
- * film subtitle + corner reticles. Details live behind the Drawer.
+ * ULTRON — Void Core UI.
+ * Siyah zemin · solda minimal terminal/sohbet · merkez/sağda büyük partikül
+ * küresi + orbital halkalar + merkez üçgen · altta Push-To-Talk barı.
+ * Tüm backend/WS/voice mantığı korunur; drawer & modallar ghost köşeden erişilir.
  */
 export default function App() {
   const minimized = useApp((s) => s.minimized);
@@ -20,7 +22,6 @@ export default function App() {
   const theme = useApp((s) => s.theme);
   const agentState = useApp((s) => s.agentState);
   const voice = useVoice();
-  const [sov, setSov] = useState("—");
 
   useEffect(() => {
     applyTheme(theme, agentState === "ERROR");
@@ -37,10 +38,6 @@ export default function App() {
       if (!localStorage.getItem("ultron_theme")) saveTheme("CRIMSON");
       localStorage.setItem("ultron_view", "cockpit");
     } catch { /* private mode */ }
-    fetch("/api/hud/overview")
-      .then((r) => r.json())
-      .then((d) => setSov(d?.health?.sovereign_status ?? "—"))
-      .catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -63,7 +60,7 @@ export default function App() {
     return (
       <div className="overlay">
         <div style={{ textAlign: "center" }}>
-          <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: "0.4em", color: "var(--red)", textShadow: "0 0 20px rgba(255,36,56,.6)" }}>
+          <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: "0.4em", color: "var(--red)", textShadow: "0 0 20px rgba(255,26,26,.6)" }}>
             SESSION TERMINATED
           </div>
           <div className="dim mono" style={{ fontSize: 10, margin: "10px 0 18px", letterSpacing: "0.14em" }}>
@@ -78,27 +75,21 @@ export default function App() {
   }
 
   return (
-    <div className="void">
-      {/* HUD reticles — four corners */}
-      <i className="reticle r-tl" />
-      <i className="reticle r-tr" />
-      <i className="reticle r-bl" />
-      <i className="reticle r-br" />
-
-      {/* top-right: minimal boss + sovereign */}
-      <div className="void-top">
-        <span className="boss-mini">BOSS</span>
-        <span className="sov-mini">🔒 {sov}</span>
-      </div>
-
+    <div className="ultron-root">
       {!minimized && (
         <>
-          <HoloHead3D />
-          <CommandCenter onVoice={voice.toggle} />
+          {/* sol: terminal / sohbet geçmişi */}
+          <TerminalChat />
+
+          {/* merkez / sağ: partikül küresi */}
+          <div className="stage-wrap">
+            <ParticleSphere />
+            <PTTBar onVoice={voice.toggle} />
+          </div>
         </>
       )}
 
-      {/* ghost corner access — details behind the void */}
+      {/* ghost köşe erişimi — konsol & ayarlar (tüm backend sistemleri) */}
       <div className="void-corner">
         <button className="ghost" title="console" onClick={() => setState({ drawer: "hud" })}>
           <Layers size={13} />

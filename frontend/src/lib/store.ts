@@ -15,6 +15,13 @@ import type {
 export type MicState = "idle" | "armed" | "listening" | "unavailable" | "error";
 export type TtsMode = "neural" | "off";
 
+/** A single terminal/chat line rendered in the left console panel. */
+export interface ChatLine {
+  role: "user" | "ultron";
+  text: string;
+  ts: number;
+}
+
 export interface AppState {
   connected: boolean;
   system: SystemSnapshot | null;
@@ -25,6 +32,7 @@ export interface AppState {
   notifications: NotificationItem[];
   agentState: AgentState;
   agentEvents: AgentEvent[];
+  chat: ChatLine[];
   coreFps: number;
   mic: MicState;
   ttsEnabled: boolean;
@@ -55,6 +63,7 @@ let state: AppState = {
   notifications: [],
   agentState: "IDLE",
   agentEvents: [],
+  chat: [],
   coreFps: 0,
   mic: "idle",
   ttsEnabled: true,
@@ -99,3 +108,16 @@ export function useApp<T>(selector: (s: AppState) => T): T {
 
 /** Live microphone amplitude (0..1), written by the voice hook, read by the waveform canvas. */
 export const audioLevel = { current: 0 };
+
+/**
+ * Append a line to the terminal/chat console (left panel).
+ * De-dupes identical consecutive lines so a spoken command that is also
+ * echoed back over the activity stream is not shown twice.
+ */
+export function pushChat(role: ChatLine["role"], text: string): void {
+  const clean = (text ?? "").trim();
+  if (!clean) return;
+  const prev = state.chat[state.chat.length - 1];
+  if (prev && prev.role === role && prev.text === clean) return;
+  setState({ chat: [...state.chat, { role, text: clean, ts: Date.now() / 1000 }].slice(-120) });
+}
