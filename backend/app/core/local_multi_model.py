@@ -3,7 +3,7 @@
 G0DM0D3-inspired, but deliberately sovereign: every inference request is sent
 only to a localhost OpenAI-compatible endpoint (normally Ollama). The engine
 supports parallel candidates, deterministic composite scoring, local judging,
-quality gates, and Liquid-style early/final leader selection.
+quality gates, and Liquid-style leader selection.
 """
 from __future__ import annotations
 
@@ -95,7 +95,7 @@ class LocalMultiModel:
 
     @staticmethod
     def _score_candidate(content: str, task: str = "") -> tuple[float, dict[str, float]]:
-        """Training-free 100-point heuristic used before optional local judge."""
+        """Training-free 100-point heuristic used before the optional local judge."""
         text = (content or "").strip()
         lower = text.lower()
         if not text:
@@ -127,6 +127,7 @@ class LocalMultiModel:
 
     def judge(self, results: Iterable[LocalModelResult], *, judge_model: str,
               system: str = "", temperature: float = 0.1, max_tokens: int = 2048) -> LocalModelResult | None:
+        """Ask a local judge to select an existing candidate, never synthesize a new answer."""
         successful = [r for r in results if r.ok and r.content]
         if not successful:
             return None
@@ -136,41 +137,58 @@ class LocalMultiModel:
                       for i, r in enumerate(successful, 1)]
         judge_messages = [
             {"role": "system", "content": system or
-             "Sen ULTRON'un yerel hakemisin. Adayları doğruluk, göreve uygunluk, eksiksizlik, açıklık ve uygulanabilirlik açısından değerlendir. En iyi cevabı doğrudan üret. Meta açıklama yapma."},
+             "Sen ULTRON'un yerel hakemisin. Adayları doğruluk, göreve uygunluk, eksiksizlik, açıklık ve uygulanabilirlik açısından değerlendir. Yalnızca en iyi adayın numarasını CANDIDATE N biçiminde döndür. Yeni cevap yazma."},
             {"role": "user", "content": "\n\n".join(candidates)},
         ]
         started = time.perf_counter()
         try:
             payload = self._request("POST", "/chat/completions", {
                 "model": judge_model, "messages": judge_messages,
-                "temperature": temperature, "max_tokens": max_tokens,
+                "temperature": temperature, "max_tokens": min(max_tokens, 128),
             })
             choices = payload.get("choices") or []
             content = ((choices[0].get("message") or {}).get("content") or "").strip() if choices else ""
-            if not content:
-                return max(successful, key=lambda r: r.score)
-            return LocalModelResult(model=f"judge:{judge_model}", ok=True, content=content,
-                                    latency_ms=(time.perf_counter() - started) * 1000)
+            match = re.search(r"CANDIDATE\s*(\d+)", content, re.IGNORECASE)
+            if match:
+                index = int(match.group(1)) - 1
+                if 0 <= index < len(successful):
+                    chosen = successful[index]
+                    return LocalModelResult(
+                        model=chosen.model, ok=True, content=chosen.content,
+                        latency_ms=(time.perf_counter() - started) * 1000,
+                        score=chosen.score, dimensions=chosen.dimensions,
+                    )
+            return max(successful, key=lambda r: r.score)
         except Exception:
             return max(successful, key=lambda r: r.score)
 
     def race_and_judge(self, models: Iterable[str], messages: list[dict[str, Any]], *,
                        judge_model: str | None = None, system: str = "", task: str = "",
                        temperature: float = 0.2, max_tokens: int = 2048,
-                       liquid_min_delta: float = 8.0) -> tuple[LocalModelResult | None, list[LocalModelResult]]:
+                       liquid_min_delta: float = 8.0,
+                       min_quality_score: float = 0.0) -> tuple[LocalModelResult | None, list[LocalModelResult]]:
         results = self.score_results(self.race(models, messages, temperature=temperature, max_tokens=max_tokens), task)
         successful = [r for r in results if r.ok and r.content]
         if not successful:
             return None, results
-        # A strong enough heuristic leader is immediately usable; a local judge
-        # still performs the final comparative pass when configured.
-        leader = successful[0]
-        if judge_model and len(successful) > 1:
-            chosen = self.judge(successful, judge_model=judge_model, system=system,
-                                temperature=min(temperature, 0.15), max_tokens=max_tokens)
-            if chosen:
-                return chosen, results
-        return leader, results
+
+        # Quality gate: weak candidates are excluded from comparative judging.
+        eligible = [r for r in successful if r.score >= float(min_quality_score)] if min_quality_score > 0 else successful
+        if not eligible:
+            return None, results
+
+        # Liquid-style leader shortcut: if the leader clearly beats runner-up,
+        # don't spend another local inference just to confirm an obvious winner.
+        leader = eligible[0]
+        runner_up = eligible[1] if len(eligible) > 1 else None
+        if not judge_model or len(eligible) == 1:
+            return leader, results
+        if runner_up and (leader.score - runner_up.score) >= float(liquid_min_delta):
+            return leader, results
+
+        chosen = self.judge(eligible, judge_model=judge_model, system=system,
+                            temperature=min(temperature, 0.15), max_tokens=max_tokens)
+        return (chosen or leader), results
 
     @staticmethod
     def best_fastest(results: Iterable[LocalModelResult]) -> LocalModelResult | None:
