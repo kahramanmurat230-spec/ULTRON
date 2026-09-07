@@ -28,7 +28,7 @@
     }
   },
   "voice": {
-    "stt_model": "small",
+    "stt_model": "models/whisper-tiny",
     "tts": "piper-local",
     "piper_voice": "tr",
     "piper_model": "data/voice/piper/tr_TR-ahmet-medium.onnx",
