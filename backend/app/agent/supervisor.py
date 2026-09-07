@@ -56,30 +56,53 @@ class VerificationWorker(Worker):
 class ReportWorker(Worker):
     id = "report"; label = "Final evaluated report"
     def __init__(self, router=None, llm_available=None): self.router = router; self.llm_available = llm_available or (lambda: False)
-    def run(self, goal, args, ctx):
-        outputs = ctx.get("outputs", {}); lines = [f"GOAL: {goal}"]
+
+    @staticmethod
+    def _base_report(goal, outputs):
+        lines = ["ULTRON FINAL REPORT", f"GOAL: {goal}"]
         ca = outputs.get("code_analysis")
         if ca:
             lines.append(f"CODE: {ca.get('files')} files · {ca.get('issues')} issues ({ca.get('high')} high) · {ca.get('duplicates')} dup · {ca.get('todo')} todo")
             lines += [f"  - {t.get('sev')}: {t.get('msg')} @ {t.get('file')}:{t.get('line')}" for t in ca.get("top", [])[:3]]
         tw = outputs.get("tests")
-        if tw: lines.append(f"TESTS: rc={tw.get('returncode')} · {tw.get('summary')}")
+        if tw:
+            lines.append(f"TESTS: rc={tw.get('returncode')} · {tw.get('summary')}")
         dg = outputs.get("diagnostic")
-        if dg: lines.append(f"DIAGNOSTIC: {dg.get('overall')}")
+        if dg:
+            lines.append(f"DIAGNOSTIC: {dg.get('overall')}")
         vf = outputs.get("verification")
-        if vf: lines.append(f"VERIFICATION: {'PASS' if not vf.get('problems') else vf['problems']}")
-        report = "\n".join(lines)
+        if vf:
+            lines.append(f"VERIFICATION: {'PASS' if not vf.get('problems') else 'FAIL — ' + '; '.join(vf['problems'])}")
+        # Explicit evidence/next-action section prevents the final report from
+        # claiming work that the supervisor did not actually execute.
+        lines.append("EVIDENCE: " + ("verified supervisor outputs are listed above." if vf and not vf.get("problems") else "verification did not fully pass; inspect the listed problems."))
+        lines.append("NEXT: " + ("no mandatory corrective action from this run." if vf and not vf.get("problems") else "fix verification failures before treating the run as complete."))
+        return "\n".join(lines)
+
+    def run(self, goal, args, ctx):
+        outputs = ctx.get("outputs", {})
+        report = self._base_report(goal, outputs)
+        ctx["final_report"] = report
         if self.router is not None and self.llm_available() and self.router.local_multi_enabled():
             try:
                 chosen, results = self.router.race_local_and_judge(
                     messages=[
-                        {"role": "system", "content": "Türkçe, kısa, net, kanıta dayalı ULTRON raporu yaz. Boss diye hitap et. Gerçekleşmeyen işi yapılmış gösterme."},
+                        {"role": "system", "content": "Türkçe, kısa, net, kanıta dayalı ULTRON final raporu yaz. Boss diye hitap et. Gerçekleşmeyen işi yapılmış gösterme. GOAL, CODE, TESTS, DIAGNOSTIC, VERIFICATION, EVIDENCE ve NEXT bilgilerini koru."},
                         {"role": "user", "content": report[:6000]},
-                    ], system="Aday raporları doğruluk, açıklık, eksiksizlik ve kanıt kullanımı açısından değerlendir. En iyi raporu doğrudan döndür.", task="report")
-                if chosen and chosen.content: report = chosen.content.strip()
-                ctx["local_evaluation"] = {"winner": chosen.model if chosen else None, "scores": [r.to_dict() for r in results]}
-            except Exception:
-                pass
+                    ],
+                    system="Aday raporlarını doğruluk, açıklık, eksiksizlik ve kanıt kullanımı açısından değerlendir. En iyi raporu doğrudan döndür; yeni olgu uydurma.",
+                    task="report",
+                )
+                if chosen and chosen.content:
+                    report = chosen.content.strip()
+                    ctx["final_report"] = report
+                ctx["local_evaluation"] = {
+                    "winner": chosen.model if chosen else None,
+                    "winner_score": chosen.score if chosen else None,
+                    "candidates": [r.to_dict() for r in results],
+                }
+            except Exception as exc:  # local evaluation is enhancement; deterministic report remains valid
+                ctx["local_evaluation"] = {"winner": None, "winner_score": None, "error": str(exc)[:200], "candidates": []}
         return {"ok": True, "output": report}
 
 
