@@ -22,9 +22,10 @@ class Plugin:
     dangerous: bool = True
 
 class PluginManager:
-    def __init__(self, root, directory="plugins"):
+    def __init__(self, root, directory="plugins", max_plugin_bytes=1_000_000):
         self.root = Path(root).resolve()
         self.directory = (self.root / directory).resolve()
+        self.max_plugin_bytes = max(1, int(max_plugin_bytes))
         self.directory.mkdir(parents=True, exist_ok=True)
         self.plugins = {}
         self.records = []
@@ -41,7 +42,12 @@ class PluginManager:
 
     def _load(self, path, reserved):
         try:
-            spec = importlib.util.spec_from_file_location(f"ultron_plugin_{path.stem}", path)
+            # Resolve before import so a symlink cannot escape the plugin directory.
+            resolved = path.resolve()
+            if path.is_symlink(): raise PermissionError("symlink plugin rejected")
+            if resolved.parent != self.directory: raise PermissionError("plugin path escapes plugin directory")
+            if resolved.stat().st_size > self.max_plugin_bytes: raise ValueError("plugin exceeds size limit")
+            spec = importlib.util.spec_from_file_location(f"ultron_plugin_{path.stem}", resolved)
             if not spec or not spec.loader: raise ImportError("import spec unavailable")
             module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
             meta = getattr(module, "PLUGIN", None)
@@ -51,7 +57,7 @@ class PluginManager:
             if name in reserved or name in self.plugins: raise ValueError("plugin name collision")
             if not isinstance(desc, str) or not desc.strip(): raise ValueError("description missing")
             if not callable(run): raise ValueError("callable run(parameters) missing")
-            return Plugin(name, desc.strip(), run, str(path.relative_to(self.root)))
+            return Plugin(name, desc.strip(), run, str(resolved.relative_to(self.root)))
         except Exception as exc:
             return Plugin(path.stem, "", None, str(path.relative_to(self.root)), valid=False, error=str(exc))
 
