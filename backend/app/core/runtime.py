@@ -27,6 +27,10 @@ from app.proactive.monitor import ProactiveMonitor
 from app.core import doctor as doctor_mod
 from app.telemetry.system_stats import get_system_stats
 from app.core.self_awareness import SelfAwareness
+from app.security.sandbox import (
+    FilesystemSandbox, sandboxed_read_text, sandboxed_write_text,
+    sandboxed_list_directory, sandboxed_find_files,
+)
 
 class UltronRuntime:
     def __init__(self, settings_path='config/settings.json'):
@@ -35,7 +39,10 @@ class UltronRuntime:
         self.settings=json.loads(Path(settings_path).read_text(encoding='utf-8'))
         self.approved=False
         from app.security.vault import CredentialVault
-        from app.security.sandbox import FilesystemSandbox, sandboxed_read_text, sandboxed_write_text, sandboxed_list_directory, sandboxed_find_files
+        # sandboxed_* helpers are imported at MODULE level: the tool lambdas
+        # in _register_tools close over the module namespace (a local import
+        # here left them NameError-ing at call time — every sandboxed file
+        # tool in the V16 runtime was broken)
         self.vault=CredentialVault(audit=None)
         self._browser_agent=None
         try:
@@ -52,7 +59,7 @@ class UltronRuntime:
         self.vision_llm=VisionLLM(self.brain,self.settings); self.gui=GUIAutomation(); self.code_agent=CodeAgent(self.brain,self.root); self.code_intel=CodeIntel(str(self.root)); self._register_tools()
         self.executor=Executor(self.registry,self.permissions,self.audit)
         if getattr(self,'skills',None) is not None: self.skills.executor=self.executor
-        self.planner=Planner(self.brain,self.registry,semantic_memory=self.semantic_memory)
+        self.planner=Planner(self.brain,self.registry,semantic_memory=self.semantic_memory,world_fn=lambda:self.world_context_fn)
         from app.agent.adaptive_persona import AdaptivePersona
         from app.emotion.emotion_engine import EmotionLog
         from app.memory.semantic_memory_v2 import SemanticMemoryV2

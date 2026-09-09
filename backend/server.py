@@ -131,6 +131,42 @@ class Hub:
     async def _task_event(self, ev: dict) -> None:
         await self.broadcast({"type": "task_engine", "data": ev})
 
+    # ---------- unified pipeline: durable events / outcome learning ----------
+    def publish_task_event(self, ev: dict) -> None:
+        """Persist every task-engine event to the DurableEventBus (append-only
+        trail; replayable). Failure here never affects the task itself."""
+        bus = getattr(self, "durable_bus", None)
+        if bus is None:
+            return
+        status = str(ev.get("status") or "event").lower()
+        bus.publish(f"task.{status}", {
+            "task_id": ev.get("task_id"), "component": ev.get("component"),
+            "status": ev.get("status"), "detail": str(ev.get("detail", ""))[:500]})
+
+    def learn_outcome(self, task_id: str | None) -> None:
+        """Record verified outcomes of completed plan/supervisor tasks into
+        memory so the Planner can consume them (outcome learning loop)."""
+        learner = getattr(self, "outcome_learner", None)
+        engine = getattr(self, "task_engine", None)
+        if learner is None or engine is None or not task_id:
+            return
+        t = engine.get(task_id)
+        if not t or t.get("kind") not in ("plan", "supervisor"):
+            return
+        result = t.get("result") or {}
+        if not result.get("ok"):
+            return
+        from types import SimpleNamespace
+        budgets = t.get("budgets") or {}
+        run = SimpleNamespace(
+            status="SUCCEEDED",
+            result={"report": result.get("final_report") or result.get("completed_steps")},
+            task_id=task_id,
+            attempts=sum(int(s.get("attempts") or 0) for s in t.get("steps", [])),
+            replans=max(0, 2 - int(budgets.get("replan_budget", 2))) if t.get("kind") == "plan" else 1,
+        )
+        learner.learn(run, t.get("goal", ""))
+
     def tools_list(self) -> list[dict]:
         base = self.tools.list_status()
         return base + (self.bridge.capabilities() if self.bridge else [])
@@ -1103,6 +1139,32 @@ async def api_tasks_pause(req: web.Request) -> web.Response:
     if not engine:
         return web.json_response({"ok": False, "error": "task engine unavailable"}, status=503)
     res = engine.pause(req.match_info["id"])
+    if res.get("ok"):
+        hub.audit.write("TASK_PAUSE", req.match_info["id"])
+    return web.json_response(res, status=200 if res.get("ok") else 400)
+
+
+async def api_tasks_resume(req: web.Request) -> web.Response:
+    """Resume a PAUSED task and re-spawn its runner (the cooperative pause
+    stopped the execute() loop; resume re-enters at the first non-SUCCESS
+    step without re-running finished work). WAITING_BRAIN tasks (planner
+    could not reach the local brain) resume the same way once the brain is
+    back — honest hand-off, no fabricated steps."""
+    engine = getattr(hub, "task_engine", None)
+    sup = getattr(hub, "supervisor", None)
+    if not engine:
+        return web.json_response({"ok": False, "error": "task engine unavailable"}, status=503)
+    task_id = req.match_info["id"]
+    current = engine.get(task_id)
+    if current and current.get("status") == "WAITING_BRAIN":
+        res = engine.resume_brain(task_id)
+    else:
+        res = engine.resume(task_id)
+    if res.get("ok"):
+        t = engine.get(task_id)
+        if t and t.get("kind") in ("supervisor", "plan"):
+            engine.spawn(t["id"], sup._runner)
+        hub.audit.write("TASK_RESUME", task_id)
     return web.json_response(res, status=200 if res.get("ok") else 400)
 
 
@@ -1115,7 +1177,7 @@ async def api_tasks_approve(req: web.Request) -> web.Response:
     res = engine.approve(req.match_info["id"])
     if res.get("ok") and sup:
         t = engine.get(req.match_info["id"])
-        if t and t.get("kind") == "supervisor":
+        if t and t.get("kind") in ("supervisor", "plan"):
             engine.spawn(t["id"], sup._runner)
         hub.audit.write("TASK_APPROVE", req.match_info["id"])
     return web.json_response(res, status=200 if res.get("ok") else 400)
@@ -1128,6 +1190,75 @@ async def api_world(_req: web.Request) -> web.Response:
     snap = world.snapshot()
     snap["llm_context"] = world.context_for_llm()
     return web.json_response(snap)
+
+
+async def api_world_history(req: web.Request) -> web.Response:
+    """Entity history/trends from the persistent WorldStore (populated by the
+    background world-persistence loop; read-only query surface)."""
+    store = getattr(hub, "world_store", None)
+    if store is None:
+        return web.json_response({"ok": False, "error": "world store unavailable"}, status=503)
+    entity = req.query.get("entity")
+    if entity:
+        return web.json_response({"ok": True, "entity": entity,
+                                  "history": store.history(entity, limit=50)})
+    return web.json_response({"ok": True, "snapshot": store.snapshot(),
+                              "stats": store.stats() if hasattr(store, "stats") else None})
+
+
+async def api_events(_req: web.Request) -> web.Response:
+    """Durable (append-only, replayable) task/event trail from the
+    DurableEventBus — every task-engine event is persisted here."""
+    bus = getattr(hub, "durable_bus", None)
+    if bus is None:
+        return web.json_response({"ok": False, "error": "durable event bus unavailable"}, status=503)
+    return web.json_response({"ok": True, "stats": bus.stats(),
+                              "events": bus.events(limit=100)})
+
+
+async def api_memory_v3(_req: web.Request) -> web.Response:
+    """Read-only stats surface for the V3 memory store (consolidated/
+    migrated long-term memory)."""
+    store = getattr(hub, "memory_v3", None)
+    if store is None:
+        return web.json_response({"ok": False, "error": "memory v3 unavailable"}, status=503)
+    return web.json_response({"ok": True, "stats": store.stats()})
+
+
+async def api_schedules_get(_req: web.Request) -> web.Response:
+    """List cron schedules from the TaskScheduler (fires goals through the
+    unified supervisor pipeline)."""
+    sched = getattr(hub, "scheduler", None)
+    if sched is None:
+        return web.json_response({"ok": False, "error": "scheduler unavailable"}, status=503)
+    return web.json_response({"ok": True, "schedules": sched.list_schedules(),
+                              "fires": sched.fires, "fire_errors": sched.fire_errors})
+
+
+async def api_schedules_post(req: web.Request) -> web.Response:
+    sched = getattr(hub, "scheduler", None)
+    if sched is None:
+        return web.json_response({"ok": False, "error": "scheduler unavailable"}, status=503)
+    try:
+        body = await req.json()
+        goal = str(body.get("goal") or "").strip()
+        cron = str(body.get("cron") or "").strip()
+        if not goal or not cron:
+            return web.json_response({"ok": False, "error": "goal and cron required"}, status=400)
+        out = sched.add_cron(goal, cron, kind=str(body.get("kind") or "custom"),
+                             budgets=body.get("budgets") or {}, needs=body.get("needs") or [])
+        return web.json_response(out, status=200 if out.get("ok") else 400)
+    except ValueError as e:
+        return web.json_response({"ok": False, "error": str(e)}, status=400)
+    except Exception as e:
+        return web.json_response({"ok": False, "error": str(e)}, status=400)
+
+
+async def api_schedules_delete(req: web.Request) -> web.Response:
+    sched = getattr(hub, "scheduler", None)
+    if sched is None:
+        return web.json_response({"ok": False, "error": "scheduler unavailable"}, status=503)
+    return web.json_response(sched.remove_schedule(req.match_info["id"]))
 
 
 async def api_models_health(_req: web.Request) -> web.Response:
@@ -1320,6 +1451,16 @@ async def on_startup(app: web.Application) -> None:
             asyncio.get_event_loop().create_task(hub._task_event(ev))
         except RuntimeError:
             pass
+        # unified wiring: durable event trail + outcome learning on completion
+        try:
+            hub.publish_task_event(ev)
+        except Exception:
+            pass
+        if ev.get("status") == "TASK_COMPLETE":
+            try:
+                hub.learn_outcome(ev.get("task_id"))
+            except Exception:
+                pass
 
     hub.task_engine.event_cb = _task_event
     workers = {
@@ -1332,11 +1473,19 @@ async def on_startup(app: web.Application) -> None:
     }
     if hub.bridge and hub.bridge.available:
         workers["diagnostic"] = DiagnosticWorker(hub.bridge.runtime)
+        # ---- unified production path: general LLM planner + tool steps ----
+        from app.agent.supervisor import PlannerWorker, ToolStepWorker
+        from app.agent.step_verify import StepVerifier
+        rt = hub.bridge.runtime
+        workers["planner"] = PlannerWorker(rt.planner)
+        workers["tool_step"] = ToolStepWorker(
+            rt.executor, rt.registry,
+            verifier=StepVerifier(browser_getter=rt._get_browser))
     hub.supervisor = SupervisorAgent(hub.task_engine, workers, event_cb=_task_event)
     recovered = hub.task_engine.recover_incomplete()
     for tid in recovered:
         t = hub.task_engine.get(tid)
-        if t and t.get("kind") == "supervisor":
+        if t and t.get("kind") in ("supervisor", "plan"):
             hub.task_engine.spawn(tid, hub.supervisor._runner)
             await hub.on_activity(f"Task {tid} recovered and resumed", "info")
     # PHASE 4: World Model — live environment state (current, not historical)
@@ -1425,6 +1574,87 @@ async def on_startup(app: web.Application) -> None:
     })
     if hub.bridge and hub.bridge.available:
         hub.bridge.runtime.world_context_fn = hub.world.context_for_llm
+
+    # ---- unified wiring: durable event bus / outcome learner / world store /
+    # task scheduler / memory V3 (previously test-only components, now on the
+    # production path — each degrades silently if unavailable) ----
+    from app.events.bus import DurableEventBus
+    from app.world.store import WorldStore
+    from app.tasks.scheduler import TaskScheduler
+    from app.memory.store_v3 import MemoryStore as MemoryStoreV3
+    from app.agent.outcome_learning import OutcomeLearner
+    rt = hub.bridge.runtime if (hub.bridge and hub.bridge.available) else None
+
+    def _redact_payload(obj):
+        try:
+            from app.security import vault
+            return vault.redact(obj)
+        except Exception:
+            return obj
+
+    try:
+        hub.durable_bus = DurableEventBus(
+            db_path=os.path.join(BASE, "data", "events", "bus.db"),
+            redact_fn=_redact_payload)
+    except Exception:
+        hub.durable_bus = None
+    try:
+        hub.outcome_learner = OutcomeLearner(
+            memory=rt.memory, audit=None) if rt is not None else None
+    except Exception:
+        hub.outcome_learner = None
+    try:
+        hub.world_store = WorldStore(db_path=os.path.join(BASE, "data", "world", "world.db"))
+    except Exception:
+        hub.world_store = None
+    try:
+        hub.memory_v3 = MemoryStoreV3(db_path=os.path.join(BASE, "data", "memory", "memory_v3.db"))
+    except Exception:
+        hub.memory_v3 = None
+
+    async def _submit_scheduled(goal, kind, budgets, needs):
+        """Scheduler entry: route through the SupervisorAgent so cron-fired
+        goals follow the SAME unified pipeline (planner/audit, approval,
+        verification, outcome learning) as user goals."""
+        return await hub.supervisor.submit(goal, budgets=budgets or None, spawn=True)
+
+    try:
+        hub.scheduler = TaskScheduler(
+            hub.task_engine,
+            db_path=os.path.join(BASE, "data", "tasks", "scheduler.db"),
+            submit_fn=_submit_scheduled)
+    except Exception:
+        hub.scheduler = None
+
+    async def _background_unified_loops():
+        """Durable secondary loops: scheduler ticks (cron goals) and periodic
+        world-state persistence to the WorldStore (trend/history queries)."""
+        world_persist_every = 60.0
+        last_world_persist = 0.0
+        while True:
+            try:
+                if hub.scheduler is not None:
+                    await hub.scheduler.async_tick()
+            except Exception:
+                pass
+            try:
+                now = time.time()
+                if (hub.world_store is not None and hub.world is not None
+                        and now - last_world_persist >= world_persist_every):
+                    last_world_persist = now
+                    snap = hub.world.snapshot()
+                    for key, state in (snap or {}).items():
+                        if isinstance(state, dict):
+                            hub.world_store.upsert(key, key, state)
+            except Exception:
+                pass
+            await asyncio.sleep(15.0)
+
+    try:
+        loop = asyncio.get_event_loop()
+        loop.create_task(_background_unified_loops())
+    except RuntimeError:
+        pass
 
     # Phase-6: Master HUD collector
     from app.observability.master_hud import MasterHUDCollector
@@ -1606,9 +1836,16 @@ def main() -> None:
     app.router.add_get("/api/tasks/{id}", api_tasks_get)
     app.router.add_post("/api/tasks/{id}/cancel", api_tasks_cancel)
     app.router.add_post("/api/tasks/{id}/pause", api_tasks_pause)
+    app.router.add_post("/api/tasks/{id}/resume", api_tasks_resume)
     app.router.add_post("/api/tasks/{id}/approve", api_tasks_approve)
     app.router.add_get("/api/models/health", api_models_health)
     app.router.add_get("/api/world", api_world)
+    app.router.add_get("/api/world/history", api_world_history)
+    app.router.add_get("/api/events", api_events)
+    app.router.add_get("/api/memory/v3", api_memory_v3)
+    app.router.add_get("/api/schedules", api_schedules_get)
+    app.router.add_post("/api/schedules", api_schedules_post)
+    app.router.add_delete("/api/schedules/{id}", api_schedules_delete)
     app.router.add_get("/api/vault", api_vault_list)
     app.router.add_get("/api/skills", api_skills)
     app.router.add_get("/api/voice/wake", api_wake_status)
