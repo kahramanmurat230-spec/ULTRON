@@ -1,0 +1,4 @@
+# Optional hardware/document providers for the full JARVIS experience.
+# Kept separate from the deterministic CI dependency set.
+opencv-python>=4.10
+pypdf>=5.0
