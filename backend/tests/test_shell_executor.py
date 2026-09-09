@@ -27,10 +27,8 @@ def test_standard_command_executes_in_workspace(tmp_path):
     assert "ULTRON_SHELL_OK" in result["output"]
 
 
-def test_high_risk_command_is_not_policy_approved_by_itself(tmp_path):
-    ex = ShellExecutor(tmp_path)
-    result = asyncio.run(ex.execute("git push"))
-    # ShellExecutor may execute policy-allowed high-risk commands only after
-    # the Executor approval boundary. This low-level adapter has no approval
-    # parameter and therefore must not be used as an authorization mechanism.
-    assert result["ok"] is False or result["risk"] == "high"
+def test_high_risk_command_is_classified_before_execution():
+    from app.security.shell_policy import ShellPolicy
+    decision = ShellPolicy().evaluate("git push")
+    assert decision.allowed is True
+    assert decision.risk == "high"
