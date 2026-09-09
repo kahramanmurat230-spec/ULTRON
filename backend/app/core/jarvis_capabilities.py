@@ -33,7 +33,7 @@ CAPABILITIES: tuple[Capability, ...] = (
     Capability("camera", "Camera Vision", "vision", "adapter", ("camera",), safety="permission", description="Real camera capture requires an explicit device permission and runtime backend."),
     Capability("image_generation", "Image Generation", "multimodal", "adapter", ("image_generate",), safety="provider", description="Provider-backed image generation adapter; no fake local implementation."),
     Capability("pdf", "PDF Workspace", "multimodal", "adapter", ("pdf_open", "pdf_extract"), description="PDF ingestion/viewer adapter to be wired into the multimodal workspace."),
-    Capability("shell", "Shell / PowerShell", "automation", "adapter", ("shell_exec",), safety="approval", description="Command execution must remain approval-gated and sandbox-aware."),
+    Capability("shell", "Shell / PowerShell", "automation", "implemented", ("shell_exec",), safety="approval", description="Workspace-bounded shell execution behind server-side approval and deterministic shell policy."),
     Capability("widgets", "HUD Widgets", "ui", "implemented", ("hud_overview", "hud_trends"), description="Dockable status, memory, automation and monitoring panels."),
     Capability("hud", "JARVIS HUD", "ui", "implemented", ("hud_overview",), description="Cockpit HUD with telemetry, status, activity and operator controls."),
     Capability("three_d", "3D Interface", "ui", "implemented", ("three", "particle_sphere"), description="Three.js cockpit/particle interface and extensible 3D scene layer."),
