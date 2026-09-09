@@ -13,10 +13,11 @@ def test_readiness_report_is_consistent():
     assert report["total"] == len(rows)
     assert report["implemented"] + report["adapter"] + report["planned"] == report["total"]
     assert 0 <= report["percent"] <= 100
-    assert report["production_ready"] is (
+    expected = (
         report["total"] > 0 and report["implemented"] == report["total"]
         and report["adapter"] == 0 and report["planned"] == 0
     )
+    assert report["production_ready"] == expected
 
 
 def test_capability_ids_are_unique_and_runtime_is_explicit():
