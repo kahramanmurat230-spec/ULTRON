@@ -116,7 +116,6 @@ class SupervisorAgent:
         router = getattr(self.workers.get("report"), "router", None)
         if router is None or not router.local_multi_enabled() or not result.get("ok"):
             return result
-        # Verification/report have their own semantics and are evaluated separately.
         if step.get("worker") in ("verification", "report"):
             return result
         evaluation = router.evaluate_local_output(result.get("output"), task="worker:" + step.get("worker", "general"))
@@ -135,13 +134,32 @@ class SupervisorAgent:
         result = worker.run(task["goal"], step.get("args", {}), ctx)
         result = self._evaluate_worker_output(task, step, result, ctx)
 
-        # A failed worker or a quality-gated worker gets one automatic replan/retry.
         if not result.get("ok") and not step.get("_replan_used"):
             step["_replan_used"] = True
             if self.event_cb:
                 self.event_cb({"task_id":task["id"],"component":"supervisor","status":"REPLAN","detail":f"{worker.id} failed or quality gate rejected; rebuilding worker step"})
             replanned = next((s for s in self.plan(task["goal"]) if s.get("worker") == worker.id), None)
             retry_args = dict((replanned or step).get("args", {})); retry_args["replan"] = True
+
+            # Prefer an explicitly declared alternate worker for deterministic recovery.
+            # The alternate runs through the same worker interface and existing executor
+            # safety gates; no approval state is fabricated here.
+            alternate_id = getattr(worker, "alt", None)
+            alternate = self.workers.get(alternate_id) if alternate_id else None
+            if alternate is not None:
+                if self.event_cb:
+                    self.event_cb({"task_id":task["id"],"component":"supervisor","status":"REPLAN_ALTERNATE","detail":f"{worker.id} failed; trying alternate {alternate.id}"})
+                alt_args = dict(step.get("args", {})); alt_args["replan"] = True; alt_args["fallback_from"] = worker.id
+                alt_result = alternate.run(task["goal"], alt_args, ctx)
+                alt_result = self._evaluate_worker_output(task, {**step, "worker": alternate.id, "args": alt_args}, alt_result, ctx)
+                if alt_result.get("ok"):
+                    ctx["outputs"][alternate.id] = alt_result.get("output")
+                    alt_result = dict(alt_result)
+                    alt_result["replanned_from"] = worker.id
+                    return alt_result
+                result = dict(result)
+                result["alternate"] = {"worker": alternate.id, "result": alt_result}
+
             result = worker.run(task["goal"], retry_args, ctx)
             result = self._evaluate_worker_output(task, {**step, "args": retry_args}, result, ctx)
 
