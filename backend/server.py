@@ -346,6 +346,16 @@ async def api_voice_metrics_history(req: web.Request) -> web.Response:
     return web.json_response({"count": 0})
 
 
+async def api_health(_req: web.Request) -> web.Response:
+    """Minimal liveness + core-status endpoint (Phase-2 spec: /api/health)."""
+    return web.json_response({
+        "ok": True,
+        "status": "running",
+        "ollama": "connected" if hub.ai_status.get("connected") else "offline",
+        "time": time.time(),
+    })
+
+
 async def api_system_health(_req: web.Request) -> web.Response:
     h = dict(getattr(hub, "health", {}))
     h["ollama"] = "connected" if hub.ai_status.get("connected") else "offline"
@@ -1820,6 +1830,7 @@ def main() -> None:
     app.router.add_post("/api/voice/live", api_voice_live)
     app.router.add_get("/api/voice/metrics", api_voice_metrics)
     app.router.add_get("/api/voice/metrics/history", api_voice_metrics_history)
+    app.router.add_get("/api/health", api_health)
     app.router.add_get("/api/system/health", api_system_health)
     app.router.add_post("/api/config/reload", api_config_reload)
     app.router.add_post("/api/security/voiceprint/enroll", api_voiceprint_enroll)

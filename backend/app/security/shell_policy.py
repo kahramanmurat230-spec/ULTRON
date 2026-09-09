@@ -67,7 +67,7 @@ _BLOCKED = (
     r"\bnetsh\b",
     r"\bnet\s+(?:user|localgroup|stop|start)\b",
     r"\bwevtutil\b",
-    r"\b(?:powershell|pwsh)\b[^\n]*\b-enc(?:odedcommand)?\b",
+    r"\b(?:powershell|pwsh)\b[^\n]*-enc(?:odedcommand)?\b",
     r"\bvssadmin\s+delete\s+shadows\b",
     # --- Unix power state (destructive, approval cannot authorize) ---
     r"\b(?:reboot|halt|poweroff)\b",
@@ -107,7 +107,10 @@ _HIGH_RISK = (
 # --------------------------------------------------------------------------
 # Structural analysis helpers (rm / chmod / chown token parsing).
 # --------------------------------------------------------------------------
-_SEGMENT_SPLIT = re.compile(r"&&|\|\||;|\||\n|\r")
+# Single `&` splits too: it is cmd.exe's chaining operator (`dir & del ...`),
+# and over-splitting a Unix background `&` only yields extra benign segments
+# to analyze — errs on the safe side. `&&` must stay FIRST in the alternation.
+_SEGMENT_SPLIT = re.compile(r"&&|\|\||;|\||&|\n|\r")
 _QUOTED_TOKEN = re.compile(r'"[^"]*"|\'[^\']*\'|[^\s]+')
 _PRIVILEGE_PREFIX = re.compile(r"^(?:sudo|doas)\b\s*", re.I)
 _ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
@@ -117,19 +120,47 @@ _ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _WRAPPERS = {"nice", "nohup", "timeout", "stdbuf", "env", "time", "ionice", "flock"}
 
 # Top-level system directories: recursive rm/chmod/chown on these (or anything
-# inside them) is considered destructive and blocked.
+# inside them) is considered destructive and blocked. Windows equivalents are
+# stored FORWARD-SLASH normalized + lower-case (see _win_norm); matching is
+# case-insensitive and separator-agnostic because Windows paths are both.
 _SYSTEM_DIRS = (
     "/etc", "/usr", "/var", "/bin", "/sbin", "/lib", "/lib64", "/lib32",
     "/libx32", "/boot", "/dev", "/proc", "/sys", "/root", "/run", "/opt",
     "/srv", "/mnt", "/media", "/lost+found", "/efi",
+    # Windows system roots (any drive letter)
+    "c:/windows", "c:/program files", "c:/program files (x86)",
+    "c:/programdata", "c:/$recycle.bin", "c:/perflogs",
+)
+
+_WIN_SYSTEM_DIRS_ANY_DRIVE = (
+    "windows", "program files", "program files (x86)", "programdata",
+    "$recycle.bin", "perflogs",
 )
 
 # Single critical files blocked for rm/chmod/chown even without -r.
+# Windows critical files are stored forward-slash normalized + lower-case.
 _CRITICAL_FILES = {
     "/etc/passwd", "/etc/shadow", "/etc/gshadow", "/etc/sudoers",
     "/etc/sudoers.d", "/etc/fstab", "/etc/hosts", "/boot/vmlinuz",
     "/bin/sh", "/bin/bash", "/usr/bin/env", "/usr/bin/sudo",
+    # Windows: registry hives, boot config, hosts, shell binaries
+    "c:/windows/system32/config/sam", "c:/windows/system32/config/system",
+    "c:/windows/system32/config/security", "c:/windows/system32/config/software",
+    "c:/windows/system32/drivers/etc/hosts", "c:/boot/bcd",
+    "c:/bootmgr", "c:/pagefile.sys", "c:/hiberfil.sys",
+    "c:/windows/explorer.exe", "c:/windows/system32/cmd.exe",
+    "c:/windows/system32/windowspowershell/v1.0/powershell.exe",
 }
+
+def _win_norm(path: str) -> str:
+    """Windows-aware normalization: case-insensitive + separator-agnostic."""
+    return str(path).strip().lower().replace("\\", "/").rstrip("/")
+
+
+def _is_critical_file(t: str) -> bool:
+    """Critical-file check tolerant of Windows separators and case."""
+    s = _strip_quotes(t)
+    return s.lower() in _CRITICAL_FILES or _win_norm(s) in _CRITICAL_FILES
 
 
 def _strip_quotes(token: str) -> str:
@@ -165,6 +196,16 @@ def _destructive_target(target: str) -> bool:
     for d in _SYSTEM_DIRS:
         if low == d or low.startswith(d + "/"):
             return True
+    # Windows semantics: case-insensitive + separator-agnostic
+    wn = _win_norm(s)
+    wparts = [p for p in wn.split(":")[-1].split("/") if p]
+    # <any-drive>:/<windows system dir>[...] — destructive on ANY drive letter
+    if re.match(r"^[a-z]:/", wn) and len(wparts) >= 1 and wparts[0] in _WIN_SYSTEM_DIRS_ANY_DRIVE:
+        return True
+    # C:/Users (all profiles) or C:/Users/<name> (one whole profile) — the
+    # Windows analog of /home and /home/<user>; deeper paths stay approval-gated
+    if re.match(r"^[a-z]:/", wn) and len(wparts) >= 2 and wparts[0] == "users" and len(wparts) <= 2:
+        return True
     # windows drive roots and UNC roots
     if re.fullmatch(r"[a-z]:[\\/](?:\*)?", low):
         return True
@@ -222,34 +263,51 @@ def _analyze_rm_like(tokens: list[str], kind: str, workspace: str | None = None)
             continue
         flags: list[str] = []
         targets: list[str] = []
+        slash_flags = kind in ("del", "erase")  # Windows del/erase use /f /q /s
         for tok in tokens[i + 1:]:
             if tok == "--":
                 continue
-            if tok.startswith("-") and tok != "-":
+            if (tok.startswith("-") and tok != "-") or (
+                    slash_flags and re.fullmatch(r"/[a-z?]?", tok, re.I)):
                 flags.append(tok)
             else:
                 targets.append(tok)
-        recursive = _has_recursive_flag(flags)
-        if kind == "rm":
+        recursive = _has_recursive_flag(flags) or (
+            slash_flags and any(f.lower() == "/s" for f in flags))
+        if kind in ("rm", "del", "erase"):
             if recursive and any(_destructive_target(t) for t in targets):
                 return "destructive rm target blocked by policy"
             if recursive and workspace:
-                ws = str(workspace).rstrip("/")
+                # Windows paths are case-insensitive and use backslashes:
+                # normalize BOTH sides (forward-slash, casefold) so
+                # `rm -rf C:\Users\Boss\ULTRON` matches workspace
+                # c:/Users/Boss/ULTRON/backend.
+                ws = _win_norm(workspace)
                 for t in targets:
-                    tgt = _strip_quotes(t).rstrip("/")
+                    tgt = _win_norm(_strip_quotes(t))
                     # the workspace root itself or ANY ANCESTOR of it (the
                     # repo that contains the agent's own source + security
                     # core) — self-destruction, blocked, not approvable
-                    if tgt == ws or (tgt and ws.startswith(tgt + "/")):
+                    if tgt and (tgt == ws or ws.startswith(tgt + "/")):
                         return "workspace root destruction blocked by policy"
-            if any(_strip_quotes(t).lower() in _CRITICAL_FILES for t in targets):
+                # Windows tokenization splits unquoted paths containing
+                # spaces ("D:\Program Files\App" -> "D:\Program" +
+                # "Files\App"); per-target checks miss the system dir, so
+                # also scan the joined target text anchored at a drive root.
+                joined = _win_norm(" ".join(_strip_quotes(t) for t in targets))
+                if re.search(
+                        r"(?:^|\s)[a-z]:/(?:windows|program files"
+                        r"(?: \(x86\))?|programdata|\$recycle\.bin|perflogs)"
+                        r"(?:/|\s|$)", joined):
+                    return "destructive rm target blocked by policy"
+            if any(_is_critical_file(t) for t in targets):
                 return "critical system file blocked by policy"
         else:  # chmod / chown
             # first non-flag token is the mode/owner spec; the rest are targets
             tgt = targets[1:] if targets else []
             if recursive and any(_destructive_target(t) for t in tgt):
                 return f"recursive {kind} on system path blocked by policy"
-            if any(_strip_quotes(t).lower() in _CRITICAL_FILES for t in tgt):
+            if any(_is_critical_file(t) for t in tgt):
                 return f"{kind} on critical system file blocked by policy"
         i += 1
     return None
@@ -278,7 +336,7 @@ def _analyze_segment(segment: str, depth: int, workspace: str | None = None) -> 
             if reason:
                 return reason
     tokens = [tok for tok, _ in pairs]
-    for kind in ("rm", "chmod", "chown"):
+    for kind in ("rm", "del", "erase", "chmod", "chown"):
         reason = _analyze_rm_like(tokens, kind, workspace=workspace)
         if reason:
             return reason
@@ -288,8 +346,7 @@ def _analyze_segment(segment: str, depth: int, workspace: str | None = None) -> 
     for i, tok in enumerate(tokens):
         if tok in _REDIRECT_OPS and i + 1 < len(tokens):
             target = _strip_quotes(tokens[i + 1])
-            if (_destructive_target(target)
-                    or target.lower() in _CRITICAL_FILES):
+            if (_destructive_target(target) or _is_critical_file(target)):
                 return "redirection to protected path blocked by policy"
     return None
 

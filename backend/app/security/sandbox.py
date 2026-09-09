@@ -66,14 +66,32 @@ class FilesystemSandbox:
             f"path {kind} outside allowed roots: {raw[:80]} (allowed: "
             f"{', '.join(str(r) for r in roots)})")
 
+    # Windows system trees at any drive root (lower-case, matched by PART so
+    # the drive prefix 'C:\\' cannot hide the system dir — the old string
+    # prefix join never matched real Windows paths for this reason).
+    _WIN_SYSTEM_PARTS = frozenset({
+        "windows", "program files", "program files (x86)", "programdata",
+        "$recycle.bin", "system volume information", "perflogs",
+    })
+
+    @classmethod
+    def _is_system_dir_path(cls, parts) -> bool:
+        """True when a resolved path's parts place it inside a Windows system
+        tree. Pure logic on the parts tuple — unit-testable on any platform
+        (on real Windows, Path.parts yields ('C:\\', 'Windows', ...))."""
+        parts = tuple(parts)
+        if len(parts) >= 2 and parts[1].lower() in cls._WIN_SYSTEM_PARTS:
+            # parts[0] is a drive root ('C:\\') on Windows, or '/' for the
+            # defensive posix-style /windows form
+            if parts[0] == "/" or (len(parts[0]) == 3
+                                   and parts[0][1:] == ":\\"
+                                   and parts[0][0].isalpha()):
+                return True
+        return False
+
     def _check_not_system(self, rp: Path):
-        system_dirs = ("/Windows", "/Program Files", "/Program Files (x86)",
-                       "/ProgramData", "/System Volume Information")
-        parts = [pt for pt in rp.parts]
-        joined = "/".join(parts[:3]) if len(parts) >= 3 else str(rp)
-        for sd in system_dirs:
-            if joined.lower().startswith(sd.lower()):
-                raise SandboxViolation(f"system directory write rejected: {rp}")
+        if self._is_system_dir_path(rp.parts):
+            raise SandboxViolation(f"system directory write rejected: {rp}")
 
     def validate_read(self, path) -> Path:
         return self.check(path, write=False)
