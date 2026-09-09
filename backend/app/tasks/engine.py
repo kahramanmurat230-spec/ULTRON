@@ -125,7 +125,8 @@ class TaskEngine:
             have = {r[1] for r in db.execute("PRAGMA table_info(tasks)")}
             for col, ddl in (("needs", "TEXT"), ("deadline_soft", "REAL"),
                              ("deadline_hard", "REAL"), ("template_key", "TEXT"),
-                             ("failure_streak", "INTEGER")):
+                             ("failure_streak", "INTEGER"),
+                             ("user_approved", "INTEGER NOT NULL DEFAULT 0")):
                 if col not in have:
                     db.execute(f"ALTER TABLE tasks ADD COLUMN {col} {ddl}")
             db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
@@ -386,7 +387,8 @@ class TaskEngine:
                 "created_at": now, "started_at": None, "updated_at": now,
                 "needs": norm_needs, "deadline_soft": (now + deadline_soft_s) if deadline_soft_s else None,
                 "deadline_hard": (now + deadline_hard_s) if deadline_hard_s else None,
-                "template_key": template_key, "failure_streak": 0}
+                "template_key": template_key, "failure_streak": 0,
+                "user_approved": False}
         self._save(task); self.journal(tid, "TASK_CREATED", output_summary=goal)
         return task
 
@@ -402,8 +404,8 @@ class TaskEngine:
         task["updated_at"] = self.now()
         with sqlite3.connect(self.path) as db:
             db.execute("""INSERT OR REPLACE INTO tasks
-                (id,goal,kind,status,priority,steps,current_step,checkpoint,retry_count,budgets,result,error,created_at,started_at,updated_at,needs,deadline_soft,deadline_hard,template_key,failure_streak)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (id,goal,kind,status,priority,steps,current_step,checkpoint,retry_count,budgets,result,error,created_at,started_at,updated_at,needs,deadline_soft,deadline_hard,template_key,failure_streak,user_approved)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (task["id"], task["goal"], task["kind"], task["status"], task["priority"],
                  json.dumps(task["steps"], ensure_ascii=False), task["current_step"],
                  json.dumps(task.get("checkpoint"), ensure_ascii=False) if task.get("checkpoint") is not None else None,
@@ -411,7 +413,8 @@ class TaskEngine:
                  json.dumps(task.get("result"), ensure_ascii=False) if task.get("result") is not None else None,
                  task.get("error"), task["created_at"], task.get("started_at"), task["updated_at"],
                  json.dumps(task.get("needs") or [], ensure_ascii=False), task.get("deadline_soft"),
-                 task.get("deadline_hard"), task.get("template_key"), int(task.get("failure_streak") or 0)))
+                 task.get("deadline_hard"), task.get("template_key"), int(task.get("failure_streak") or 0),
+                 1 if task.get("user_approved") else 0))
 
     def get(self, task_id: str) -> dict | None:
         with sqlite3.connect(self.path) as db:
@@ -422,11 +425,21 @@ class TaskEngine:
         for k in ("steps", "budgets", "result", "checkpoint", "needs"):
             try: t[k] = json.loads(t[k]) if t[k] is not None else ([] if k in ("steps", "needs") else None)
             except Exception: t[k] = [] if k in ("steps", "needs") else None
+        t["user_approved"] = bool(t.get("user_approved"))
         return t
 
-    def list(self, limit=100) -> list[dict]:
+    def list(self, limit=100, status=None) -> list[dict]:
+        """List tasks, newest first. ``status`` optionally filters by a single
+        task status (the /api/tasks endpoint contract)."""
         with sqlite3.connect(self.path) as db:
-            rows = db.execute("SELECT id FROM tasks ORDER BY updated_at DESC LIMIT ?", (int(limit),)).fetchall()
+            if status:
+                rows = db.execute(
+                    "SELECT id FROM tasks WHERE status=? ORDER BY updated_at DESC LIMIT ?",
+                    (str(status), int(limit))).fetchall()
+            else:
+                rows = db.execute(
+                    "SELECT id FROM tasks ORDER BY updated_at DESC LIMIT ?",
+                    (int(limit),)).fetchall()
         return [self.get(r[0]) for r in rows if self.get(r[0])]
 
     def _risk_decision(self, step: dict):
@@ -477,6 +490,14 @@ class TaskEngine:
         soft_dl, hard_dl, soft_warned = task.get("deadline_soft"), task.get("deadline_hard"), False
         try:
             while task["current_step"] < len(task["steps"]):
+                # cooperative pause: stop cleanly between steps (the task may
+                # have been paused by the server while a step was running)
+                if self._paused_externally(task_id):
+                    task["status"] = "PAUSED"; self._save(task)
+                    done = [s["label"] for s in task["steps"] if s["status"] == "SUCCESS"]
+                    self.emit(task_id, "engine", "TASK_PAUSED", f"paused between steps (completed: {done})")
+                    self.journal(task_id, "TASK_PAUSED", output_summary=f"paused between steps (completed: {done})")
+                    return self.get(task_id)
                 iterations += 1
                 if iterations > int(task["budgets"].get("max_iterations", 8)): raise RuntimeError("max plan iterations exceeded (replan budget)")
                 if self.now() > deadline: raise TimeoutError("task timeout budget exhausted")
@@ -494,10 +515,21 @@ class TaskEngine:
                 self.journal(task_id, "STEP_START", step=step, input_hash=step["input_hash"], trace_id=root.trace_id, span_id=step_span.span_id)
                 step_t0 = self.now(); attempts_allowed = 1 + int(task["budgets"].get("retry_budget", 1)); result = None; last_err = None
                 while step["attempts"] < attempts_allowed:
+                    if self._paused_externally(task_id):
+                        # paused between retry attempts: the step stays PENDING
+                        # so resume() re-runs it with the remaining attempts
+                        step["status"] = "PENDING"
+                        task["status"] = "PAUSED"; self._save(task)
+                        self.emit(task_id, "engine", "TASK_PAUSED", f"paused during step {step['label']} (between attempts)")
+                        self.journal(task_id, "TASK_PAUSED", output_summary=f"paused during step {step['label']}")
+                        return self.get(task_id)
                     step["attempts"] += 1; ctx["tools_used"] += 1
                     try:
                         result = await asyncio.wait_for(step_runner(task, step, ctx), timeout=float(task["budgets"].get("step_timeout_s", 240))); break
                     except NeedsApproval as ap:
+                        # the attempt was interrupted for approval, not spent:
+                        # refund it so the approved re-run gets a full attempt
+                        step["attempts"] = max(0, step["attempts"] - 1)
                         step["status"] = "PENDING"; task["checkpoint"] = {"awaiting_approval_for": step["label"]}; self._save(task, "WAITING_APPROVAL"); self.emit(task_id, "engine", "APPROVAL_REQUIRED", f"{ap.reason} risks={ap.risks}"); self.journal(task_id, "STEP_WAITING_APPROVAL", step=step, approval=ap.reason, trace_id=root.trace_id, span_id=step_span.span_id)
                         try: step_span.end(result_summary=f"approval required: {ap.reason}", approval="required", risk=self._risk_decision(step))
                         except Exception: pass
@@ -513,8 +545,21 @@ class TaskEngine:
                         if self.now() > deadline: break
                 if self.now() > deadline: raise TimeoutError("task timeout budget exhausted")
                 if result is None or not result.get("ok"):
-                    err_text = (str(last_err) or type(last_err).__name__) if isinstance(last_err, Exception) else str(last_err); err_cls = type(last_err).__name__ if isinstance(last_err, Exception) else "RuntimeError"
-                    step["status"] = "FAILED"; step["result"] = {"ok": False, "error": self._redact(err_text)}; self.emit(task_id, f"worker:{step['worker']}", "STEP_FAILED", err_text)
+                    if isinstance(last_err, Exception):
+                        err_text = str(last_err) or type(last_err).__name__
+                    elif isinstance(result, dict):
+                        err_text = str((result.get("output") or {}).get("error")
+                                       or result.get("error") or "step failed")
+                    else:
+                        err_text = str(last_err)
+                    err_cls = type(last_err).__name__ if isinstance(last_err, Exception) else "RuntimeError"
+                    # preserve the runner's STRUCTURED failure output (e.g.
+                    # tool steps: executed/succeeded/verified flags, replan
+                    # markers) — the persisted task must show why it failed
+                    fail_out = result.get("output") if isinstance(result, dict) else None
+                    step["status"] = "FAILED"
+                    step["result"] = {"ok": False, "error": self._redact(err_text), **({"output": _jsonable(fail_out)} if fail_out is not None else {})}
+                    self.emit(task_id, f"worker:{step['worker']}", "STEP_FAILED", err_text)
                     try: step_span.end(status="ERROR", error_class=err_cls, result_summary=err_text[:200], risk=self._risk_decision(step), budget=_budget_snap())
                     except Exception: pass
                     self.journal(task_id, "STEP_FAILED", step=step, output_summary=err_text, duration_ms=(self.now() - step_t0) * 1000, risk=self._risk_decision(step), error_class=err_cls, trace_id=root.trace_id, span_id=step_span.span_id)
@@ -525,7 +570,14 @@ class TaskEngine:
                 try: step_span.end(result_summary=out_summary[:200], risk=self._risk_decision(step), budget=_budget_snap())
                 except Exception: pass
                 self.journal(task_id, "STEP_SUCCESS", step=step, input_hash=step.get("input_hash"), output_summary=out_summary, duration_ms=(self.now() - step_t0) * 1000, risk=self._risk_decision(step), trace_id=root.trace_id, span_id=step_span.span_id)
-                task["checkpoint"] = {"last_successful_step": step["label"], "ts": self.now()}; task["current_step"] += 1; self._save(task); self._usage_check(task, ctx["usage"])
+                task["checkpoint"] = {"last_successful_step": step["label"], "ts": self.now()}; task["current_step"] += 1
+                if self._paused_externally(task_id): task["status"] = "PAUSED"
+                self._save(task)
+                if task["status"] == "PAUSED":
+                    self.emit(task_id, "engine", "TASK_PAUSED", f"paused after step {step['label']}")
+                    self.journal(task_id, "TASK_PAUSED", output_summary=f"paused after step {step['label']}")
+                    return self.get(task_id)
+                self._usage_check(task, ctx["usage"])
                 _now = self.now()
                 if hard_dl and _now > hard_dl and task["current_step"] < len(task["steps"]): raise _HardDeadlineExceeded("hard deadline reached (post-step)")
                 if soft_dl and _now > soft_dl and not soft_warned:
@@ -571,11 +623,61 @@ class TaskEngine:
         t["checkpoint"] = None; self._save(t, "RUNNING"); return self.get(task_id)
 
     def approve(self, task_id: str) -> dict:
+        """Server-side approval for a WAITING_APPROVAL task.
+
+        Grants a ONE-SHOT execution approval (persisted): the next dangerous
+        step runner may pass approved=True to the executor exactly once; the
+        flag is consumed after use. Approval never bypasses hard security
+        blocks (shell policy / SelfCodeBoundary / sandbox) — those are
+        enforced downstream of approval, at the execution boundary."""
         t = self.get(task_id)
         if not t: return {"ok": False, "error": "no such task"}
         try:
+            t["user_approved"] = True
             self._save(t, "RUNNING"); self.emit(task_id, "engine", "APPROVAL_GRANTED"); return {"ok": True, "task": self.get(task_id)}
         except InvalidTransition as e: return {"ok": False, "error": str(e)}
+
+    # ------------------------------------------------------ pause / resume
+    def _paused_externally(self, task_id: str) -> bool:
+        """True when the persisted status was set to PAUSED from outside the
+        running execute() loop (server pause endpoint)."""
+        try:
+            with sqlite3.connect(self.path) as db:
+                row = db.execute("SELECT status FROM tasks WHERE id=?", (task_id,)).fetchone()
+            return bool(row and row[0] == "PAUSED")
+        except Exception:
+            return False
+
+    def pause(self, task_id: str) -> dict:
+        """Cooperatively pause a RUNNING task between/at step boundaries.
+
+        The currently executing step is allowed to finish (no hard kill —
+        partial side effects would be untrackable); execute() then persists
+        the step results and stops with status=PAUSED. The status is real:
+        nothing is faked, and resume() re-enters the loop at the first
+        non-successful step."""
+        t = self.get(task_id)
+        if not t: return {"ok": False, "error": "no such task"}
+        if t["status"] != "RUNNING":
+            return {"ok": False, "error": f"task not RUNNING ({t['status']})"}
+        self._save(t, "PAUSED")
+        self.emit(task_id, "engine", "TASK_PAUSED", "pause requested (cooperative)")
+        self.journal(task_id, "TASK_PAUSED", output_summary="pause requested (cooperative)")
+        return {"ok": True, "status": "PAUSED", "task_id": task_id}
+
+    def resume(self, task_id: str) -> dict:
+        """Resume a PAUSED task. The caller (server endpoint / engine.spawn)
+        is responsible for re-spawning the step runner; execute() continues
+        from the first non-SUCCESS step without re-running finished work."""
+        t = self.get(task_id)
+        if not t: return {"ok": False, "error": "no such task"}
+        if t["status"] != "PAUSED":
+            return {"ok": False, "error": f"task not PAUSED ({t['status']})"}
+        self._save(t, "RUNNING")
+        self.emit(task_id, "engine", "TASK_RESUMED", "manual resume")
+        self.journal(task_id, "TASK_RESUMED", output_summary="manual resume")
+        return {"ok": True, "status": "RUNNING", "task_id": task_id}
+
 
     def spawn(self, task_id: str, step_runner) -> bool:
         if task_id in self._running: return False
