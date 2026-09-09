@@ -8,9 +8,10 @@ from pathlib import Path
 from threading import RLock
 
 class UndoJournal:
-    def __init__(self, root, max_entries=100):
+    def __init__(self, root, max_entries=100, max_snapshot_bytes=2_000_000):
         self.root = Path(root).resolve()
         self.max_entries = max(1, int(max_entries))
+        self.max_snapshot_bytes = max(1, int(max_snapshot_bytes))
         self._entries = []
         self._lock = RLock()
 
@@ -30,6 +31,8 @@ class UndoJournal:
         p = self._safe(path)
         if not p.exists(): return {"path": str(p), "exists": False, "content": None, "digest": None}
         if not p.is_file(): raise ValueError("Undo snapshot yalnızca dosyalar için destekleniyor.")
+        if p.stat().st_size > self.max_snapshot_bytes:
+            raise ValueError(f"Undo snapshot dosya boyutu sınırını aşıyor ({self.max_snapshot_bytes} bytes).")
         content = p.read_text(encoding="utf-8", errors="replace")
         return {"path": str(p), "exists": True, "content": content, "digest": self._digest(content)}
 
@@ -51,7 +54,12 @@ class UndoJournal:
             if not self._entries: return {"ok": False, "status": "EMPTY"}
             idx = next((i for i,e in enumerate(self._entries) if entry_id is None or e["id"] == entry_id), None)
             if idx is None: return {"ok": False, "status": "NOT_FOUND"}
-            entry = self._entries[idx]; target = entry["before"]; p = self._safe(target["path"])
+            entry = self._entries[idx]; target = entry["before"]; expected = entry.get("after") or {}
+            p = self._safe(target["path"])
+            # Never overwrite a newer change made after the journal entry.
+            current = self.snapshot(p)
+            if current.get("digest") != expected.get("digest") or current.get("exists") != expected.get("exists"):
+                return {"ok": False, "status": "STALE", "id": entry["id"], "operation": entry["operation"], "path": str(p)}
             if target["exists"]:
                 p.parent.mkdir(parents=True, exist_ok=True); p.write_text(target["content"], encoding="utf-8")
             else: p.unlink(missing_ok=True)
