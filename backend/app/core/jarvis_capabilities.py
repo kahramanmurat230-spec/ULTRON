@@ -32,7 +32,7 @@ CAPABILITIES: tuple[Capability, ...] = (
     Capability("screen_vision", "Screen Vision / OCR", "vision", "implemented", ("screen", "screen_ocr"), description="Screen capture and OCR/vision analysis where local dependencies exist."),
     Capability("camera", "Camera Vision", "vision", "adapter", ("camera",), safety="permission", description="Real camera capture requires an explicit device permission and runtime backend."),
     Capability("image_generation", "Image Generation", "multimodal", "adapter", ("image_generate",), safety="provider", description="Provider-backed image generation adapter; no fake local implementation."),
-    Capability("pdf", "PDF Workspace", "multimodal", "adapter", ("pdf_open", "pdf_extract"), description="PDF ingestion/viewer adapter to be wired into the multimodal workspace."),
+    Capability("pdf", "PDF Workspace", "multimodal", "implemented", ("pdf_open", "pdf_extract", "pdf_ingest", "pdf_search"), description="Sandbox-bound PDF extraction, chunking, lexical indexing and optional scanned-PDF OCR fallback; document content is untrusted data."),
     Capability("shell", "Shell / PowerShell", "automation", "implemented", ("shell_exec",), safety="approval", description="Workspace-bounded shell execution behind server-side approval and deterministic shell policy."),
     Capability("widgets", "HUD Widgets", "ui", "implemented", ("hud_overview", "hud_trends"), description="Dockable status, memory, automation and monitoring panels."),
     Capability("hud", "JARVIS HUD", "ui", "implemented", ("hud_overview",), description="Cockpit HUD with telemetry, status, activity and operator controls."),
