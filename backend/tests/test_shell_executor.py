@@ -1,6 +1,8 @@
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from app.tools.shell import ShellExecutor
 
 
@@ -15,9 +17,8 @@ def test_blocked_command_never_runs(tmp_path):
 def test_workspace_cwd_is_enforced(tmp_path):
     ex = ShellExecutor(tmp_path)
     outside = Path(tmp_path).parent
-    result = asyncio.run(ex.execute("echo safe", cwd=str(outside)))
-    assert result["ok"] is False
-    assert "workspace" in result["error"]
+    with pytest.raises(ValueError, match="shell cwd must remain inside workspace"):
+        asyncio.run(ex.execute("echo safe", cwd=str(outside)))
 
 
 def test_standard_command_executes_in_workspace(tmp_path):
