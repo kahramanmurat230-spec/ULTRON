@@ -6,9 +6,7 @@ import pytest
 from PIL import Image, ImageDraw
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from app.vision.analyze import (  # noqa: E402
-    VisionFoundationError, analyze_image, diff_images, ocr_elements,
-)
+from app.vision.analyze import VisionFoundationError, analyze_image, diff_images, ocr_elements
 
 
 def white(path):
@@ -51,6 +49,18 @@ def test_analyze_image_busy_edges(tmp_path):
     assert res["mostly_uniform"] is False
 
 
+def test_analyze_image_dominant_color_ordering(tmp_path):
+    path = tmp_path / "colors.png"
+    img = Image.new("RGB", (100, 100), (240, 16, 16))
+    for x in range(20):
+        for y in range(100):
+            img.putpixel((x, y), (16, 240, 16))
+    img.save(path)
+    top = analyze_image(str(path))["dominant_colors"][0]
+    assert top["share"] == 0.8
+    assert top["rgb_approx"][0] >= 224 and top["rgb_approx"][1] < 32
+
+
 def test_analyze_missing_file():
     with pytest.raises(FileNotFoundError):
         analyze_image("/yok/boyle/dosya.png")
@@ -58,7 +68,7 @@ def test_analyze_missing_file():
 
 def test_diff_images_identical_vs_changed(tmp_path):
     a = white(tmp_path / "a.png")
-    b = white(tmp_path / "b.png")  # aynı içerik
+    b = white(tmp_path / "b.png")
     same = diff_images(a, b)
     assert same["changed"] is False and same["changed_ratio"] < 0.01
     c = busy(tmp_path / "c.png")
@@ -90,7 +100,6 @@ def test_ocr_elements_honest_without_tesseract(tmp_path):
         ocr_elements(p)
 
 
-# ---------------- PHASE 7: stale screenshot + action verification ----------------
 def test_screenshot_fresh(tmp_path):
     import time as t
     from app.vision.analyze import screenshot_fresh
@@ -105,7 +114,6 @@ def test_screenshot_fresh(tmp_path):
 
 
 def test_verify_visual_change_verdict(tmp_path):
-    from PIL import Image
     from app.vision.analyze import verify_visual_change
     a = tmp_path / "a.png"; b = tmp_path / "b.png"; c = tmp_path / "c.png"
     Image.new("RGB", (100, 100), (255, 255, 255)).save(a)
