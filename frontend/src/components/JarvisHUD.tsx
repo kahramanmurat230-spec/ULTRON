@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Camera, Code2, Cpu, FileText, Globe, Image, Keyboard, Mic, Monitor, Package, Search, ShieldCheck, Terminal, Boxes } from "lucide-react";
+import "./jarvis-hud.css";
 
 type Capability = { id: string; name: string; layer: string; status: string; tools?: string[]; safety?: string; description?: string };
 
