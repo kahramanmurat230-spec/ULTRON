@@ -10,8 +10,12 @@ function runtimeRoot() { return app.isPackaged ? path.join(process.resourcesPath
 function backendDir() { return path.join(runtimeRoot(), 'backend'); }
 
 function backendCommand() {
-  const packagedExe = path.join(backendDir(), 'dist', 'ultron-backend.exe');
-  if (app.isPackaged && fs.existsSync(packagedExe)) return { command: packagedExe, args: [] };
+  // PyInstaller --onedir creates: backend/dist/ultron-backend/ultron-backend.exe
+  const packagedBundleExe = path.join(backendDir(), 'dist', 'ultron-backend', 'ultron-backend.exe');
+  const packagedFlatExe = path.join(backendDir(), 'dist', 'ultron-backend.exe');
+  if (app.isPackaged && fs.existsSync(packagedBundleExe)) return { command: packagedBundleExe, args: [] };
+  if (app.isPackaged && fs.existsSync(packagedFlatExe)) return { command: packagedFlatExe, args: [] };
+
   const venvPython = path.join(backendDir(), '.venv', 'Scripts', 'python.exe');
   if (fs.existsSync(venvPython)) return { command: venvPython, args: ['-B', 'server.py'] };
   return { command: 'python', args: ['-B', 'server.py'] };
