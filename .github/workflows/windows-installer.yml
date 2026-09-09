@@ -58,3 +58,5 @@ jobs:
           name: ULTRON-Windows-Installer
           path: desktop/dist/*.exe
           if-no-files-found: error
+
+# Production packaging gate: installer must fail if the executable artifact is missing.
