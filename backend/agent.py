@@ -22,6 +22,73 @@ def shell_is_safe(command: str) -> bool:
     return any(c == s or c.startswith(s + " ") for s in SAFE_SHELL_COMMANDS)
 
 
+# --------------------------------------------------------------------------
+# Turkish terminal command extraction (P1 fix)
+#
+# "terminalde X çalıştır" must extract exactly X — never "de X çalıştır".
+# Trigger words tolerate Turkish suffixes: terminalde/terminal'de/terminale,
+# çalıştır/çalıştırın, komut/komutu/komutunu. The postposition form
+# ("X'ı terminalde çalıştır") is only accepted when a terminal is explicitly
+# mentioned; bare "X çalıştır" keeps falling through to other intents
+# (previous behaviour).
+# --------------------------------------------------------------------------
+_TERMINAL_TRIGGER_START = re.compile(
+    r"^\s*(?:(?:run|çalıştır\w{0,10}|calistir\w{0,10}"
+    r"|terminal(?:['’]?[a-zçğıöşü]{0,8})?"
+    r"|komut(?:['’]?\w{0,8})?)\b\s*[:,\-]?\s*)+",
+    re.I)
+_TERMINAL_TRIGGER_END = re.compile(
+    r"\s*[:,\-]?\s*(?:komutunu\s+|komutu\s+|bir\s+)?"
+    r"(?:çalıştır\w{0,10}|calistir\w{0,10}|run)\s*[!.]?\s*$",
+    re.I)
+_TERMINAL_MENTION = re.compile(r"\b(?:terminal\w*|komut\w*|shell|bash|cmd)\b", re.I)
+_TERMINAL_RUN_VERB = re.compile(r"\b(?:run\s|çalıştır|calistir)", re.I)
+_TERMINAL_POSTFIX = re.compile(
+    r"^\s*(.+?)\s*[:,\-]?\s*(?:komutunu\s+|komutu\s+|bir\s+)?"
+    r"(?:çalıştır\w{0,10}|calistir\w{0,10})\s*[!.]?\s*$",
+    re.I)
+_OPEN_INTENT_VERBS = ("aç", "ac", "open", "kapat", "close", "başlat", "baslat")
+
+
+def _extract_terminal_command(text: str) -> str | None:
+    """Extract the shell command from a Turkish/English run request.
+
+    Returns None when this is not really a terminal command so the intent
+    falls through to the other (browser/open) intents as before.
+    """
+    t = (text or "").strip()
+    if not t:
+        return None
+    started_with_trigger = bool(_TERMINAL_TRIGGER_START.match(t))
+    if started_with_trigger:
+        # prefix form: "terminalde X çalıştır" / "run X" / "çalıştır: X"
+        cmd = _TERMINAL_TRIGGER_START.sub("", t)
+        cmd = _TERMINAL_TRIGGER_END.sub("", cmd).strip(" :,-")
+    else:
+        # postposition form: "X'i terminalde çalıştır" / "X komutunu çalıştır"
+        # (only when a terminal is explicitly mentioned — bare "X çalıştır"
+        # keeps falling through to other intents as before)
+        cmd = ""
+        if _TERMINAL_MENTION.search(t):
+            m = _TERMINAL_POSTFIX.match(t)
+            if m:
+                cmd = m.group(1).strip()
+                # drop the terminal mention itself from the command body
+                cmd = re.sub(r"\s*\b(?:terminal|komut)\w*\b\s*", " ", cmd,
+                             flags=re.I).strip(" :,-'\u2019")
+                # strip the Turkish accusative suffix: "X'ı" / "X'i" / "X'yi"
+                cmd = re.sub(r"['’]\s*(?:ı|i|u|ü|yı|yi|yu|yü|nı|ni|nu|nü)\s*$", "",
+                             cmd, flags=re.I).strip(" :,-'\u2019")
+    if not cmd:
+        return None
+    # "terminali aç" / "terminal aç" are open-the-terminal requests, not
+    # shell commands — but only when no explicit run verb is present.
+    first_word = cmd.split()[0].lower()
+    if first_word in _OPEN_INTENT_VERBS and not _TERMINAL_RUN_VERB.search(t):
+        return None
+    return cmd
+
+
 class Agent:
     def __init__(self, broadcast, tools, memory, telemetry, get_ai_status, on_activity,
                  fallback=None, request_approval=None) -> None:
@@ -78,7 +145,7 @@ class Agent:
             "durum" in t and "hava" not in t):
             return {"kind": "system_check", "steps": ["Sample telemetry", "Verify sensors"]}
         if any(k in t for k in ("run ", "çalıştır", "calistir", "terminal")):
-            cmd = re.sub(r"^.*?(run|çalıştır|calistir|terminal)[:\s]*", "", t).strip()
+            cmd = _extract_terminal_command(text)
             if cmd:
                 return {"kind": "terminal", "arg": cmd, "steps": [f"exec: {cmd}", "Verify exit code"]}
         if any(k in t for k in ("chrome", "browser", "tarayıcı", "tarayici", "edge", "firefox")) or (
