@@ -6,6 +6,8 @@ import sys
 import time
 
 from app.security.shell_policy import ShellPolicy
+from app.multimodal.camera_adapter import CameraAdapter
+from app.multimodal.pdf_workspace import PDFWorkspace
 
 WIN = sys.platform.startswith("win")
 
@@ -17,6 +19,8 @@ class ToolRegistry:
         self.on_activity = on_activity
         self.get_ai_status = get_ai_status
         self.shell_policy = ShellPolicy()
+        self.pdf_workspace = PDFWorkspace(workspace)
+        self.camera_adapter = CameraAdapter()
         self.tools: dict[str, dict] = {
             "browser": {"label": "Browser", "detail": "", "status": "CHECKING"},
             "file_system": {"label": "File System", "detail": "", "status": "CHECKING"},
@@ -24,6 +28,8 @@ class ToolRegistry:
             "screen": {"label": "Screen", "detail": "", "status": "CHECKING"},
             "voice": {"label": "Voice", "detail": "waiting for client report", "status": "CHECKING"},
             "vision": {"label": "Vision", "detail": "", "status": "CHECKING"},
+            "pdf": {"label": "PDF Workspace", "detail": "", "status": "CHECKING"},
+            "camera": {"label": "Camera", "detail": "", "status": "CHECKING"},
         }
         self.refresh_sync()
 
@@ -56,6 +62,10 @@ class ToolRegistry:
         ai = self.get_ai_status()
         vision_model = ai.get("vision")
         self.tools["vision"].update(status="READY" if vision_model else "UNAVAILABLE", detail=vision_model if vision_model else "no vision model in Ollama")
+        pdf = self.pdf_workspace.status()
+        self.tools["pdf"].update(status="READY" if pdf.get("available") else "UNAVAILABLE", detail=pdf.get("backend") or pdf.get("reason", "PDF backend unavailable"))
+        camera = self.camera_adapter.status()
+        self.tools["camera"].update(status="READY" if camera.get("available") else "UNAVAILABLE", detail=camera.get("reason", "camera unavailable or permission denied"))
 
     def report_voice(self, available: bool, detail: str = "") -> None:
         self.tools["voice"].update(status="READY" if available else "UNAVAILABLE", detail=detail or ("client speech API present" if available else "browser lacks speech API"))
@@ -78,19 +88,11 @@ class ToolRegistry:
             await self.on_activity(f"{t['label']} unavailable: {t['detail']}", "error")
             return {"ok": False, "error": t["detail"]}
 
-        # Shell policy is enforced at the actual execution boundary. This is
-        # deliberately before RUNNING/subprocess creation so blocked commands
-        # cannot mutate state or appear as successful executions.
         if name == "terminal":
             decision = self.shell_policy.evaluate(arg)
             if not decision.allowed:
                 await self.on_activity(f"Terminal blocked: {decision.reason}", "error")
-                return {
-                    "ok": False,
-                    "blocked": True,
-                    "risk": decision.risk,
-                    "error": decision.reason,
-                }
+                return {"ok": False, "blocked": True, "risk": decision.risk, "error": decision.reason}
 
         await self._set(name, "RUNNING")
         started = time.time()
@@ -105,6 +107,10 @@ class ToolRegistry:
                 result = await self._run_fs(arg)
             elif name == "vision":
                 result = {"ok": False, "error": "vision inference not wired (model present but no pipeline)"}
+            elif name == "pdf":
+                result = await self._run_pdf(arg)
+            elif name == "camera":
+                result = await self._run_camera()
             else:
                 result = {"ok": False, "error": f"{name} is client-side"}
         except Exception as exc:
@@ -197,3 +203,11 @@ class ToolRegistry:
         except OSError as exc:
             return {"ok": False, "error": str(exc)}
         return {"ok": True, "output": ", ".join(entries) or "(empty)"}
+
+    async def _run_pdf(self, path: str) -> dict:
+        if not path:
+            return {"ok": False, "error": "no PDF path supplied"}
+        return self.pdf_workspace.ingest(path)
+
+    async def _run_camera(self) -> dict:
+        return self.camera_adapter.capture_jpeg()
