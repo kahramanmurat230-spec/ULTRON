@@ -28,6 +28,18 @@ def _install():
             except Exception: pass
     TaskEngine._transition = _transition
 
+    def _risk_decision(self, step):
+        risk = step.get("risk")
+        if risk is not None:
+            return risk
+        if step.get("dangerous"):
+            return {"tool": step.get("worker") or step.get("label"), "level": "HIGH"}
+        worker = str(step.get("worker") or "")
+        if worker in {"gui_click", "gui_type", "gui_hotkey", "browser_click", "browser_type", "process_kill", "delete_path", "move_path", "copy_path", "rename_path", "create_folder", "write_text", "apply_code_patch", "self_repair"}:
+            return {"tool": worker, "level": "HIGH"}
+        return "normal"
+    TaskEngine._risk_decision = _risk_decision
+
     if not getattr(TaskEngine, "_ultron_resilience_hooks", False):
         original_create = TaskEngine.create
         original_journal = TaskEngine.journal
@@ -36,7 +48,6 @@ def _install():
 
         def create(self, *args, **kwargs):
             task = original_create(self, *args, **kwargs)
-            # Creation is the durable task boundary; the execution journal starts at TASK_START.
             try:
                 with __import__("sqlite3").connect(self.path) as db:
                     db.execute("UPDATE task_steps_journal SET status='TASK_START' WHERE task_id=? AND status='TASK_CREATED'", (task["id"],))
@@ -45,7 +56,6 @@ def _install():
             return task
 
         def journal(self, task_id, status, *args, **kwargs):
-            # chmod(0444) must be treated as a real journal interruption even under root.
             try:
                 mode = self.path.stat().st_mode
                 if mode & 0o222 == 0:
@@ -77,7 +87,7 @@ def _install():
             except Exception:
                 pass
             result = original_recover(self, *args, **kwargs)
-            # Preserve cumulative boot-crash streak across repeated recoveries.
+            respawn = []
             for tid, prior in before.items():
                 try:
                     t = self.get(tid)
@@ -86,15 +96,16 @@ def _install():
                     target = max(observed, prior + 1)
                     if target != observed:
                         t["failure_streak"] = target
-                        if target >= 3 and t.get("status") == "RECOVERING":
-                            t["error"] = "dead-lettered: repeated boot crash"
-                            t["result"] = {"ok":False,"partial":False,"reason":"dead_letter","failure_streak":target}
-                            self._save(t, "DEAD_LETTER")
-                        else:
-                            self._save(t)
+                    if target >= 3 and t.get("status") == "RECOVERING":
+                        t["error"] = "dead-lettered: repeated boot crash"
+                        t["result"] = {"ok":False,"partial":False,"reason":"dead_letter","failure_streak":target}
+                        self._save(t, "DEAD_LETTER")
+                    else:
+                        self._save(t)
+                        if tid in result: respawn.append(tid)
                 except Exception:
-                    pass
-            return result
+                    if tid in result: respawn.append(tid)
+            return [tid for tid in result if tid not in before or tid in respawn]
 
         TaskEngine.create = create
         TaskEngine.journal = journal
