@@ -7,7 +7,7 @@ class Executor:
         self.registry = registry
         self.permissions = permissions
         self.audit = audit
-        self.undo = undo_journal or UndoJournal(Path.cwd())
+        self.undo = undo_journal or getattr(registry, "undo_journal", None) or UndoJournal(Path.cwd())
 
     def execute(self, calls, approved=False):
         from app.security.risk import SelfCodeBoundary
