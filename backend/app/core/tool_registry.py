@@ -1,6 +1,7 @@
 from pathlib import Path
 from app.core.plugin_manager import PluginManager
 from app.core.undo_journal import UndoJournal
+from app.tools.shell import ShellExecutor
 
 
 class ToolRegistry:
@@ -8,9 +9,17 @@ class ToolRegistry:
         self._tools = {}
         self.plugin_manager = PluginManager(Path.cwd())
         self.undo_journal = UndoJournal(Path.cwd())
+        self.shell = ShellExecutor(Path.cwd())
         self._plugins_loaded = False
         self.register("undo_list", lambda: self.undo_journal.list(), "List reversible recent file actions.")
         self.register("undo_last", lambda entry_id=None: self.undo_journal.undo(entry_id), "Undo the most recent reversible file action; approval required.", {"type": "object", "properties": {"entry_id": {"type": "string"}}, "required": []}, dangerous=True)
+        self.register(
+            "shell_exec",
+            lambda command, cwd=None: self.shell.execute(command, cwd),
+            "Execute a shell command inside the workspace; server-side approval and shell policy are mandatory.",
+            {"type": "object", "properties": {"command": {"type": "string"}, "cwd": {"type": "string"}}, "required": ["command"]},
+            dangerous=True,
+        )
 
     def register(self, name, fn, description, parameters=None, dangerous=False):
         self._tools[name] = {
