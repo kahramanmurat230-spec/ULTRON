@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 
 let backend = null;
+let ollama = null;
 
 function projectRoot() {
   return path.resolve(__dirname, '..');
@@ -22,6 +23,61 @@ function pythonCommand() {
   const venvPython = path.join(backendDir(), '.venv', 'Scripts', 'python.exe');
   if (fs.existsSync(venvPython)) return venvPython;
   return 'python';
+}
+
+function findOllama() {
+  const candidates = [
+    process.env.OLLAMA_EXE,
+    process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Programs', 'Ollama', 'ollama.exe'),
+    process.env.ProgramFiles && path.join(process.env.ProgramFiles, 'Ollama', 'ollama.exe')
+  ].filter(Boolean);
+  return candidates.find((p) => fs.existsSync(p)) || 'ollama.exe';
+}
+
+async function ollamaReady() {
+  try {
+    const response = await fetch('http://127.0.0.1:11434/api/tags');
+    if (!response.ok) return false;
+    const data = await response.json();
+    return Array.isArray(data.models);
+  } catch (_) {
+    return false;
+  }
+}
+
+async function ensureOllama(timeoutMs = 20000) {
+  if (await ollamaReady()) return true;
+
+  const command = findOllama();
+  try {
+    ollama = spawn(command, ['serve'], {
+      windowsHide: true,
+      stdio: 'ignore',
+      detached: false,
+      env: { ...process.env }
+    });
+    ollama.on('error', () => {});
+  } catch (_) {
+    return false;
+  }
+
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (await ollamaReady()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return false;
+}
+
+async function backendReady() {
+  try {
+    const response = await fetch('http://127.0.0.1:8000/api/system/health');
+    if (!response.ok) return false;
+    const data = await response.json();
+    return data.runtime === 'online' && data.ollama === 'connected';
+  } catch (_) {
+    return false;
+  }
 }
 
 function startBackend() {
@@ -47,14 +103,14 @@ function startBackend() {
   });
 }
 
-async function waitForBackend(timeoutMs = 20000) {
+async function ensureBackend(timeoutMs = 25000) {
+  if (await backendReady()) return true;
+  startBackend();
+
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
-    try {
-      const response = await fetch('http://127.0.0.1:8000/api/system');
-      if (response.ok) return true;
-    } catch (_) {}
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    if (await backendReady()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 500));
   }
   return false;
 }
@@ -75,9 +131,13 @@ async function createWindow() {
     }
   });
 
-  const ready = await waitForBackend();
-  if (!ready) {
-    dialog.showErrorBox('ULTRON', 'ULTRON backend 20 saniye içinde hazır olmadı. Python ortamını ve Ollama\'yı kontrol edin.');
+  if (!(await ensureOllama())) {
+    dialog.showErrorBox('ULTRON', 'Ollama 20 saniye içinde hazır olmadı. Ollama kurulumunu veya OLLAMA_EXE yolunu kontrol edin.');
+    return win;
+  }
+
+  if (!(await ensureBackend())) {
+    dialog.showErrorBox('ULTRON', 'ULTRON backend 25 saniye içinde hazır olmadı. Python/paketlenmiş backend ortamını kontrol edin.');
     return win;
   }
 
@@ -94,7 +154,6 @@ async function createWindow() {
 app.whenReady().then(async () => {
   try {
     fs.mkdirSync(path.join(app.getPath('userData'), 'workspace'), { recursive: true });
-    startBackend();
     await createWindow();
   } catch (err) {
     dialog.showErrorBox('ULTRON', `ULTRON başlatılamadı.\n\n${err.message}`);
@@ -109,9 +168,11 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   if (backend && !backend.killed) backend.kill();
+  if (ollama && !ollama.killed) ollama.kill();
   if (process.platform !== 'darwin') app.quit();
 });
 
 app.on('before-quit', () => {
   if (backend && !backend.killed) backend.kill();
+  if (ollama && !ollama.killed) ollama.kill();
 });
