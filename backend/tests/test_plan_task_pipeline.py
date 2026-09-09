@@ -497,6 +497,49 @@ def test_planner_world_fn_failure_degrades(tmp_path):
     assert out["steps"][0]["tool"] == "list_directory"
 
 
+def test_runtime_world_context_reaches_planner_prompt(tmp_path):
+    """Regression (final integration audit): the server assigns
+    runtime.world_context_fn = WorldModel.context_for_llm — a bound METHOD.
+    The runtime's world_fn lambda must CALL it; returning it un-called made
+    every consumer silently drop the world block (.strip() on a method →
+    swallowed exception → empty context). Verified at the RUNTIME wiring
+    level, not just the Planner level."""
+    from app.core.runtime import UltronRuntime
+    from app.world.model import WorldModel
+    from app.security import sovereign_privacy as _sov
+    # UltronRuntime.__init__ flips the GLOBAL sovereign-mode flag via
+    # configure(); restore it so later test files (e.g. test_redaction_
+    # sovereign) are not polluted (final-audit finding: order-dependent fail)
+    _prev_sovereign = _sov.state["sovereign_mode"]
+    try:
+        rt = UltronRuntime(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "config", "settings.json"))
+    finally:
+        _sov.state["sovereign_mode"] = _prev_sovereign
+    wm = WorldModel(sources={
+        "system": lambda: {"cpu_percent": 5.0, "ram_percent": 10.0,
+                           "disk_percent": 8.0}})
+    rt.world_context_fn = wm.context_for_llm  # exactly what server.py does
+    captured = []
+
+    class CapBrain:
+        def chat(self, messages, tools=None, model=None):
+            captured.append(messages)
+            return {"message": {"content": json.dumps({
+                "goal": "t", "steps": [{"tool": "system_status",
+                                        "arguments": {}, "reason": "r"}]})}}
+
+    rt.planner.brain = CapBrain()
+    rt.planner.make_plan("duruma göre planla")
+    system = captured[0][0]["content"]
+    assert "AKTİF DÜNYA DURUMU" in system
+    assert "cpu=5.0%" in system
+    # the chat Agent shares the same fixed lambda
+    assert rt.agent.world_fn is rt.planner.world_fn
+    block = rt.agent.world_fn()
+    assert isinstance(block, str) and "AKTİF DÜNYA DURUMU" in block
+
+
 # ---------------------------------------------------- scheduler wiring
 def test_scheduler_fires_through_supervisor_pipeline(tmp_path):
     out = tmp_path / "out" / "saatlik.txt"

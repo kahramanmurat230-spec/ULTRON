@@ -34,7 +34,8 @@ class ShellExecutor:
         return str(candidate)
 
     async def execute(self, command: str, cwd: str | None = None) -> dict:
-        decision = self.policy.evaluate(command)
+        # workspace context lets the policy block workspace-root destruction
+        decision = self.policy.evaluate(command, workspace=str(self.workspace))
         if not decision.allowed:
             return {"ok": False, "blocked": True, "risk": decision.risk, "error": decision.reason}
 

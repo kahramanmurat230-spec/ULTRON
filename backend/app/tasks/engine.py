@@ -632,6 +632,11 @@ class TaskEngine:
         enforced downstream of approval, at the execution boundary."""
         t = self.get(task_id)
         if not t: return {"ok": False, "error": "no such task"}
+        if t["status"] != "WAITING_APPROVAL":
+            # approval is ONLY for tasks paused at the approval gate; granting
+            # it on FAILED/RUNNING would leak a stale user_approved=True into
+            # a later retry (audit finding)
+            return {"ok": False, "error": f"task not WAITING_APPROVAL ({t['status']})"}
         try:
             t["user_approved"] = True
             self._save(t, "RUNNING"); self.emit(task_id, "engine", "APPROVAL_GRANTED"); return {"ok": True, "task": self.get(task_id)}

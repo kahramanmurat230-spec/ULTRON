@@ -206,7 +206,10 @@ def _is_command_position(tokens: list[str], i: int) -> bool:
     return j >= 0 and _base_name(tokens[j]) in _WRAPPERS
 
 
-def _analyze_rm_like(tokens: list[str], kind: str) -> str | None:
+_REDIRECT_OPS = (">", ">>", ">|", "&>", "&>>")
+
+
+def _analyze_rm_like(tokens: list[str], kind: str, workspace: str | None = None) -> str | None:
     """rm: block recursive destruction of system targets; chmod/chown: block
     recursive system operations and any operation on critical files."""
     i = 0
@@ -230,6 +233,15 @@ def _analyze_rm_like(tokens: list[str], kind: str) -> str | None:
         if kind == "rm":
             if recursive and any(_destructive_target(t) for t in targets):
                 return "destructive rm target blocked by policy"
+            if recursive and workspace:
+                ws = str(workspace).rstrip("/")
+                for t in targets:
+                    tgt = _strip_quotes(t).rstrip("/")
+                    # the workspace root itself or ANY ANCESTOR of it (the
+                    # repo that contains the agent's own source + security
+                    # core) — self-destruction, blocked, not approvable
+                    if tgt == ws or (tgt and ws.startswith(tgt + "/")):
+                        return "workspace root destruction blocked by policy"
             if any(_strip_quotes(t).lower() in _CRITICAL_FILES for t in targets):
                 return "critical system file blocked by policy"
         else:  # chmod / chown
@@ -243,7 +255,7 @@ def _analyze_rm_like(tokens: list[str], kind: str) -> str | None:
     return None
 
 
-def _analyze_segment(segment: str, depth: int) -> str | None:
+def _analyze_segment(segment: str, depth: int, workspace: str | None = None) -> str | None:
     seg = segment.strip()
     if not seg:
         return None
@@ -262,26 +274,59 @@ def _analyze_segment(segment: str, depth: int) -> str | None:
     # recurse into quoted command-looking strings (bash -c "rm -rf /" ...)
     for tok, quoted in pairs:
         if quoted and depth < 3 and (" " in tok or ";" in tok or "&&" in tok):
-            reason = _analyze_command(tok, depth + 1)
+            reason = _analyze_command(tok, depth + 1, workspace=workspace)
             if reason:
                 return reason
     tokens = [tok for tok, _ in pairs]
     for kind in ("rm", "chmod", "chown"):
-        reason = _analyze_rm_like(tokens, kind)
+        reason = _analyze_rm_like(tokens, kind, workspace=workspace)
         if reason:
             return reason
+    # redirection clobbering of protected paths: `echo x > /etc/passwd`,
+    # `cat f >> /etc/sudoers`, `> /boot/grub.cfg` — bypasses the file-tool
+    # sandbox otherwise; blocked regardless of approval
+    for i, tok in enumerate(tokens):
+        if tok in _REDIRECT_OPS and i + 1 < len(tokens):
+            target = _strip_quotes(tokens[i + 1])
+            if (_destructive_target(target)
+                    or target.lower() in _CRITICAL_FILES):
+                return "redirection to protected path blocked by policy"
     return None
 
 
-def _analyze_command(cmd: str, depth: int = 0) -> str | None:
+# Interpreter first-tokens: piping a DECODED payload into these is an
+# obfuscation vector for otherwise-blocked commands (echo cm0... | base64 -d | sh).
+_INTERPRETERS = {"sh", "bash", "zsh", "dash", "ksh", "python", "python3", "perl", "ruby"}
+_DECODE_HINT = re.compile(
+    r"\b(?:base64|base32|openssl|xxd|uudecode|certutil)\b[^|;&]*(?:-d|--decode|-D|-r)\b",
+    re.IGNORECASE)
+
+
+def _analyze_command(cmd: str, depth: int = 0, workspace: str | None = None) -> str | None:
     normalized = " ".join(str(cmd or "").strip().split())
     if not normalized:
         return "empty command"
     for pattern in _BLOCKED:
         if re.search(pattern, normalized, flags=re.IGNORECASE):
             return "command matches blocked operation policy"
-    for segment in _SEGMENT_SPLIT.split(normalized):
-        reason = _analyze_segment(segment, depth)
+    # decoded/obfuscated payload piped into an interpreter: block regardless
+    # of what the encoded bytes contain (approval cannot make it safe)
+    # NOTE: `>|` (clobber-redirect) contains the pipe metachar, so normalize
+    # it on the ANALYSIS copy before segment splitting (analysis only — the
+    # command itself is never executed by the policy).
+    segments = _SEGMENT_SPLIT.split(normalized.replace(">|", ">"))
+    interpreter_pipe = False
+    for seg in segments:
+        toks = seg.strip().split()
+        while toks and (_PRIVILEGE_PREFIX.match(toks[0]) or toks[0] in _WRAPPERS):
+            toks.pop(0)
+        if toks and _strip_quotes(toks[0]).lower() in _INTERPRETERS:
+            interpreter_pipe = True
+            break
+    if interpreter_pipe and _DECODE_HINT.search(normalized):
+        return "decoded payload piped to an interpreter is blocked by policy"
+    for segment in segments:
+        reason = _analyze_segment(segment, depth, workspace=workspace)
         if reason:
             return reason
     return None
@@ -290,12 +335,12 @@ def _analyze_command(cmd: str, depth: int = 0) -> str | None:
 class ShellPolicy:
     """Classify a command without executing it or changing security state."""
 
-    def evaluate(self, command: str) -> ShellDecision:
+    def evaluate(self, command: str, workspace: str | None = None) -> ShellDecision:
         normalized = " ".join(str(command or "").strip().split())
         if not normalized:
             return ShellDecision(False, "invalid", "empty command", normalized)
 
-        blocked_reason = _analyze_command(normalized)
+        blocked_reason = _analyze_command(normalized, workspace=workspace)
         if blocked_reason:
             return ShellDecision(False, "blocked", blocked_reason, normalized)
 

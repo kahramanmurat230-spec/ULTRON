@@ -71,6 +71,8 @@ class StepVerifier:
             return self._verify_rename(arguments)
         if tool == "process_kill":
             return self._verify_pid_gone(arguments.get("pid"))
+        if tool == "shell_exec":
+            return self._verify_shell(result)
         if tool == "browser_navigate":
             return self._verify_browser_url(arguments.get("url"))
         if tool in ("browser_click", "browser_type", "browser_select",
@@ -181,6 +183,31 @@ class StepVerifier:
             return psutil.pid_exists(int(pid))
         except Exception:
             return True  # cannot observe → do not claim gone
+
+    def _verify_shell(self, result) -> dict:
+        """Shell results are policy-shaped dicts from ShellExecutor: a
+        BLOCKED or non-zero-exit result is a verified failure, never a pass.
+        An unawaited coroutine means the command never executed at all."""
+        import inspect
+        if inspect.iscoroutine(result):
+            return {"mode": "policy", "verified": False,
+                    "detail": "tool returned an unawaited coroutine — command never executed"}
+        if not isinstance(result, dict):
+            return {"mode": "none", "verified": None,
+                    "detail": "unobservable shell result"}
+        if result.get("blocked"):
+            return {"mode": "policy", "verified": False,
+                    "detail": str(result.get("error", "blocked by shell policy"))[: self.max_detail]}
+        if result.get("timed_out"):
+            return {"mode": "process", "verified": False,
+                    "detail": "command timed out"}
+        if result.get("ok") and "output" in result:
+            # exit code 0 observed from the real subprocess (shape level;
+            # deeper effect verification needs an expect{} criterion)
+            return {"mode": "shape", "verified": True,
+                    "detail": f"exit 0, output {len(str(result.get('output', '')))} chars"}
+        return {"mode": "process", "verified": False,
+                "detail": str(result.get("error", "command failed"))[: self.max_detail]}
 
     def _verify_browser_url(self, url) -> dict:
         browser = self._browser()

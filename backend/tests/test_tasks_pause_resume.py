@@ -198,3 +198,19 @@ def test_pause_resume_journalled(tmp_path):
     assert "TASK_RESUMED" in rows
     emitted = [ev["status"] for ev in events]
     assert "TASK_PAUSED" in emitted and "TASK_RESUMED" in emitted
+
+
+def test_approve_rejected_outside_approval_gate(tmp_path):
+    """Approval is ONLY for WAITING_APPROVAL tasks (final-audit finding:
+    approving a FAILED task resurrected it and leaked a stale one-shot
+    user_approved=True into a later retry)."""
+    e = make_engine(tmp_path)
+    t = e.create("goal", kind="plan", steps=[{"label": "s", "worker": "w"}])
+    set_status(e, t["id"], "RUNNING", "FAILED")
+    res = e.approve(t["id"])
+    assert res["ok"] is False and "not WAITING_APPROVAL" in res["error"]
+    assert e.get(t["id"])["user_approved"] is False
+    # RUNNING task also cannot be approved
+    t2 = e.create("goal2", kind="plan", steps=[{"label": "s", "worker": "w"}])
+    set_status(e, t2["id"], "RUNNING")
+    assert e.approve(t2["id"])["ok"] is False

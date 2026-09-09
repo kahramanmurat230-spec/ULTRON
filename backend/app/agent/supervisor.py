@@ -169,9 +169,13 @@ class ToolStepWorker(Worker):
         verification = (self.verifier.verify(tool, arguments, result, expect=expect)
                         if self.verifier is not None
                         else {"mode": "none", "verified": None, "detail": "no verifier"})
-        ok = verification.get("verified") is not False
+        # succeeded = the tool's own reported outcome (e.g. shell policy
+        # blocks / non-zero exits return ok=False without raising)
+        succeeded = (bool(result.get("ok"))
+                     if isinstance(result, dict) and "ok" in result else True)
+        ok = verification.get("verified") is not False and succeeded
         return {"ok": ok, "output": {
-            "tool": tool, "executed": True, "succeeded": True,
+            "tool": tool, "executed": True, "succeeded": succeeded,
             "verified": verification, "result": result,
             "risk": decision.get("level")}}
 
@@ -413,6 +417,11 @@ class SupervisorAgent:
                            "detail": f"{tool} failed ({err[:120]}); replanned "
                                      f"{len(new_steps)} steps (replan_budget={remaining - 1})"})
         return {"ok": False, "output": {
-            "tool": tool, "executed": True, "succeeded": False,
+            "tool": tool,
+            # preserve the ORIGINAL executed flag: a hard-blocked step was
+            # never dispatched (executed=False); a verification/tool failure
+            # was (executed=True). Never fabricate either way.
+            "executed": bool(out.get("executed")) if isinstance(out, dict) else True,
+            "succeeded": False,
             "verified": (out.get("verified") or {"mode": "none", "verified": None}),
             "error": err, "replanned": True, "new_steps": len(new_steps)}}

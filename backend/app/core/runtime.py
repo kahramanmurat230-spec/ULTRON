@@ -59,13 +59,18 @@ class UltronRuntime:
         self.vision_llm=VisionLLM(self.brain,self.settings); self.gui=GUIAutomation(); self.code_agent=CodeAgent(self.brain,self.root); self.code_intel=CodeIntel(str(self.root)); self._register_tools()
         self.executor=Executor(self.registry,self.permissions,self.audit)
         if getattr(self,'skills',None) is not None: self.skills.executor=self.executor
-        self.planner=Planner(self.brain,self.registry,semantic_memory=self.semantic_memory,world_fn=lambda:self.world_context_fn)
+        # world_context_fn is assigned by the server as WorldModel.context_for_llm
+        # (a bound METHOD): call it. Returning it un-called made every consumer
+        # (planner + agent) silently drop the world block (str+method TypeError
+        # / .strip() AttributeError swallowed by their excepts).
+        _world = lambda: (self.world_context_fn() if callable(self.world_context_fn) else self.world_context_fn)
+        self.planner=Planner(self.brain,self.registry,semantic_memory=self.semantic_memory,world_fn=_world)
         from app.agent.adaptive_persona import AdaptivePersona
         from app.emotion.emotion_engine import EmotionLog
         from app.memory.semantic_memory_v2 import SemanticMemoryV2
         self.adaptive=AdaptivePersona(); self.emotion_log=EmotionLog(); self.semv2=SemanticMemoryV2(self.memory)
         self.world_context_fn=None
-        self.agent=Agent(self.brain,self.executor,self.memory,self.registry,self.settings,self.audit,self.tts,semantic_memory=self.semantic_memory,planner=self.planner,vision_llm=self.vision_llm,adaptive=self.adaptive,router=self.router,world_fn=lambda:self.world_context_fn,redact_fn=self.vault.redact)
+        self.agent=Agent(self.brain,self.executor,self.memory,self.registry,self.settings,self.audit,self.tts,semantic_memory=self.semantic_memory,planner=self.planner,vision_llm=self.vision_llm,adaptive=self.adaptive,router=self.router,world_fn=_world,redact_fn=self.vault.redact)
         self.self_awareness=SelfAwareness(registry=self.registry,doctor=doctor_mod,tts=self.tts,brain=self.brain)
         self.live_voice=LiveVoice(self.agent,self.tts,self.settings)
         self.proactive=ProactiveMonitor(self.settings,self._proactive_event)

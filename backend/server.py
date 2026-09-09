@@ -257,6 +257,63 @@ async def api_tools(_req: web.Request) -> web.Response:
     return web.json_response(hub.tools_list())
 
 
+async def api_capabilities(_req: web.Request) -> web.Response:
+    """Real runtime layer capabilities for the JARVIS HUD (the frontend
+    previously fell back to a hardcoded list because this endpoint did not
+    exist). Status is composed from the ACTUAL wired components — never a
+    static claim."""
+    rt = _rt()
+    ai = hub.ai_status or {}
+    rows: list[dict] = []
+
+    def add(cid: str, name: str, layer: str, status: str, desc: str,
+            tools: list | None = None, safety: str = ""):
+        rows.append({"id": cid, "name": name, "layer": layer, "status": status,
+                     "tools": tools or [], "safety": safety, "description": desc})
+
+    add("brain", "Local Brain (Ollama)", "intelligence",
+        "implemented" if ai.get("connected") else "offline",
+        f"yerel LLM ({ai.get('model', 'unknown')})",
+        safety="sovereign mode: yalnızca yerel uç")
+    add("memory", "Memory V16 + semantic", "memory",
+        "implemented" if rt is not None else "unavailable",
+        "uzun süreli bellek + semantik arama + outcome öğrenme")
+    add("autonomous_tasks", "TaskEngine + Supervisor + Planner", "autonomy",
+        "implemented" if getattr(hub, "task_engine", None) is not None else "unavailable",
+        "kalıcı görevler, plan/replan, onay kapısı, bağımsız doğrulama",
+        safety="MEDIUM+ onay ister; hard block onayla aşılıamaz")
+    add("voice", "Voice stack (wake/VAD/STT/TTS)", "voice",
+        "partial" if getattr(hub, "wake", None) else "unavailable",
+        "söz konusu donanım olmadan doğrulanamaz (mic/ses)")
+    add("shell", "Terminal + ShellPolicy", "execution",
+        "implemented", "onaylı komut yürütme + yıkıcı komut hard-block",
+        safety="P0-1 politika + self-coding sınırı")
+    add("web", "Browser automation", "web",
+        "implemented", "Playwright tarayıcı ajanı (headless bu ortamda)")
+    add("screen_vision", "Screen / Vision / OCR", "vision",
+        "partial", "ekran/görüntü/OCR donanım gerektirir")
+    add("security", "Approval + sandbox + risk engine", "security",
+        "implemented", "merkezi sunucu-tarafı onay, dosya sandbox'ı, risk motoru",
+        safety="ajan kendini onaylayamaz")
+    add("world", "World Model + WorldStore", "context",
+        "implemented" if getattr(hub, "world", None) is not None else "unavailable",
+        "canlı dünya durumu → planner bağlamı + kalıcı geçmiş")
+    add("events", "DurableEventBus", "observability",
+        "implemented" if getattr(hub, "durable_bus", None) is not None else "unavailable",
+        "kalıcı, yeniden oynatılabilir olay izi")
+    add("scheduler", "TaskScheduler (cron)", "autonomy",
+        "implemented" if getattr(hub, "scheduler", None) is not None else "unavailable",
+        "cron hedefleri aynı üretim hattından yürür")
+    if rt is not None:
+        try:
+            rep = rt.self_awareness.report()
+            add("self_awareness", "Runtime self-awareness", "context",
+                "implemented", f"{rep.get('tool_count', 0)} kayıtlı araç, salt-okunur rapor")
+        except Exception:
+            pass
+    return web.json_response(rows)
+
+
 async def api_memory(_req: web.Request) -> web.Response:
     status = hub.memory.status()
     if hub.bridge and hub.bridge.available:
@@ -1757,6 +1814,7 @@ def main() -> None:
     app.router.add_get("/api/system", api_system)
     app.router.add_get("/api/ai", api_ai)
     app.router.add_get("/api/tools", api_tools)
+    app.router.add_get("/api/capabilities", api_capabilities)
     app.router.add_get("/api/memory", api_memory)
     app.router.add_get("/api/audit", api_audit)
     app.router.add_post("/api/voice/live", api_voice_live)

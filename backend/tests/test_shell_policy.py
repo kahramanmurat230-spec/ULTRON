@@ -228,3 +228,66 @@ def test_normal_command_is_standard() -> None:
 def test_policy_is_classification_only() -> None:
     result = evaluate_shell("echo hello")
     assert set(result) == {"allowed", "risk", "reason", "normalized"}
+
+
+# ---------------- final-integration-audit hardening (redirection / decode-pipe / workspace) ----------------
+def test_redirection_to_protected_path_is_blocked() -> None:
+    """`echo x > /etc/passwd` bypassed every file-tool boundary (audit finding)."""
+    for cmd in ("echo x > /etc/passwd", "cat f >> /etc/sudoers",
+                "echo y >| /boot/grub.cfg", "echo z &> /etc/fstab"):
+        d = ShellPolicy().evaluate(cmd)
+        assert d.allowed is False, cmd
+
+
+def test_redirection_inside_workspace_stays_approval_gated() -> None:
+    d = ShellPolicy().evaluate("echo merhaba > data/cikti.txt",
+                               workspace="/ws/backend")
+    assert d.allowed is True  # human sees the exact command at the approval gate
+
+
+def test_decoded_payload_piped_to_interpreter_is_blocked() -> None:
+    for cmd in ("echo cm0gLXJmIH4= | base64 -d | sh",
+                "echo ag== | base64 --decode | bash",
+                "echo x | xxd -r | sh",
+                "cat enc | openssl enc -d | bash"):
+        d = ShellPolicy().evaluate(cmd)
+        assert d.allowed is False, cmd
+
+
+def test_decode_without_interpreter_pipe_stays_allowed() -> None:
+    assert ShellPolicy().evaluate("echo aGk= | base64 -d").allowed is True
+    assert ShellPolicy().evaluate("bash script.sh").allowed is True
+
+
+def test_workspace_root_or_ancestor_rm_is_blocked() -> None:
+    p = ShellPolicy()
+    assert p.evaluate("rm -rf /repo", workspace="/repo/backend").allowed is False
+    assert p.evaluate("rm -rf /repo/backend", workspace="/repo/backend").allowed is False
+    # subdirectory deletion stays approval-gated (legitimate work)
+    assert p.evaluate("rm -rf /repo/backend/data/tmp",
+                      workspace="/repo/backend").allowed is True
+    assert p.evaluate("rm -rf data/tmp", workspace="/repo/backend").allowed is True
+
+
+def test_shell_executor_passes_workspace_context() -> None:
+    from app.tools.shell import ShellExecutor
+    ex = ShellExecutor("/ws/backend")
+    d = ex.policy.evaluate("rm -rf /ws", workspace=str(ex.workspace))
+    assert d.allowed is False
+
+
+def test_registry_shell_exec_is_sync_and_real() -> None:
+    """The V16 registry shell_exec must return a real dict (the async
+    ShellExecutor coroutine used to leak unawaited — command never ran but
+    the executor reported success)."""
+    import asyncio
+    from app.core.tool_registry import ToolRegistry
+    reg = ToolRegistry()
+    item = reg.get("shell_exec")
+    assert item is not None and item["dangerous"] is True
+    out = item["fn"](command="echo sync_bridge_ok")
+    assert isinstance(out, dict), f"coroutine leaked: {type(out)}"
+    assert out["ok"] is True and "sync_bridge_ok" in out["output"]
+    # blocked command → policy dict, never a coroutine
+    blocked = item["fn"](command="rm -rf /")
+    assert isinstance(blocked, dict) and blocked.get("blocked") is True
