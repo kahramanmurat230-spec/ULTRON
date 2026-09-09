@@ -52,6 +52,15 @@ jobs:
         working-directory: desktop
         run: npm run dist
 
+      - name: Verify installer output
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -Path desktop/dist -Filter *.exe -File
+          if ($files.Count -eq 0) {
+            throw 'No Windows installer executable was produced.'
+          }
+          $files | Select-Object Name, Length, FullName | Format-Table -AutoSize
+
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
