@@ -9,19 +9,34 @@ from app.multimodal.image_generation import ImageGenerationAdapter
 from app.multimodal.pdf_workspace import PDFWorkspace
 
 
-def live_capability_inventory() -> list[dict[str, Any]]:
-    rows = capability_inventory()
+def _probe(name: str) -> dict[str, Any] | None:
+    """Probe only capabilities whose runtime depends on optional providers/devices."""
     probes = {
-        "camera": CameraAdapter().status(),
-        "image_generation": ImageGenerationAdapter().status(),
-        "pdf": PDFWorkspace().status(),
+        "camera": CameraAdapter,
+        "image_generation": ImageGenerationAdapter,
+        "pdf": PDFWorkspace,
     }
+    factory = probes.get(name)
+    if factory is None:
+        return None
+    try:
+        result = factory().status()
+    except Exception as exc:  # pragma: no cover - defensive boundary
+        return {"available": False, "reason": f"probe failed: {exc}"}
+    return dict(result) if isinstance(result, dict) else {"available": False, "reason": "invalid probe result"}
+
+
+def live_capability_inventory() -> list[dict[str, Any]]:
+    """Return declarative capabilities enriched with live provider/device state."""
+    rows = capability_inventory()
     out: list[dict[str, Any]] = []
     for row in rows:
         item = dict(row)
-        probe = probes.get(item["id"])
+        probe = _probe(item["id"])
         if probe is not None:
             item["runtime"] = probe
+            # A failed optional provider/device probe can only downgrade a
+            # capability; it must never manufacture a live implementation.
             if not probe.get("available", False):
                 item["status"] = "adapter"
         else:
@@ -36,12 +51,15 @@ def readiness_report() -> dict[str, Any]:
     implemented = sum(1 for row in rows if row["status"] == "implemented")
     adapters = sum(1 for row in rows if row["status"] == "adapter")
     planned = sum(1 for row in rows if row["status"] == "planned")
+    # "Production ready" means every declared capability is live now, not
+    # merely that there are no TODO/planned rows.
+    production_ready = total > 0 and implemented == total and adapters == 0 and planned == 0
     return {
         "total": total,
         "implemented": implemented,
         "adapter": adapters,
         "planned": planned,
         "percent": round((implemented / total) * 100, 1) if total else 100.0,
-        "production_ready": planned == 0,
+        "production_ready": production_ready,
         "capabilities": rows,
     }
