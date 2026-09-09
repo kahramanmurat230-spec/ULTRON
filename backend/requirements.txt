@@ -16,3 +16,5 @@ playsound3>=3.0.0
 playwright>=1.40           # browser agent (sonra: python -m playwright install chromium)
 pvporcupine>=3.0          # gerçek wake-word engine (jarvis/computer; AccessKey: PICOVOICE_ACCESS_KEY)
 openwakeword>=0.6         # açık wake-word alternatifi (modeller: data/voice/wake/*.tflite)
+pypdf>=5.0                # real PDF metadata/text extraction
+opencv-python>=4.10       # real camera capture on supported Windows backends
