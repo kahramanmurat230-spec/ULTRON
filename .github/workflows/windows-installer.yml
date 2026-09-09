@@ -1,0 +1,62 @@
+name: ULTRON Windows Installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['main', 'feat/ultron-ui-redesign-local']
+    tags: ['v*']
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-multimodal.txt
+          pip install pyinstaller
+
+      - name: Build backend executable
+        working-directory: backend
+        run: python build_windows.py
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm install
+
+      - name: Build Windows installer
+        working-directory: desktop
+        run: npm run dist
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: ULTRON-Windows-Installer
+          path: desktop/dist/*.exe
+          if-no-files-found: error
+
+# Production packaging gate: installer must fail if the executable artifact is missing.
