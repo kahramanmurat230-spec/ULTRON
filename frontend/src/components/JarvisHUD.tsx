@@ -11,14 +11,28 @@ const ICONS: Record<string, typeof Cpu> = {
   security: ShieldCheck, mesh: Package,
 };
 
+// Static fallback mirrors the backend declarative contract. It intentionally
+// does not pretend provider/device-dependent adapters are live.
 const fallback: Capability[] = [
-  ["brain", "Brain / Planner / Supervisor"], ["memory", "Persistent Memory"], ["autonomous_tasks", "Long Tasks / Autonomous Coding"],
-  ["voice", "Voice / Wake Word / TTS"], ["computer_control", "Computer Control"], ["web", "Web Search / Browser Agent"],
-  ["screen_vision", "Screen Vision / OCR"], ["camera", "Camera Vision"], ["image_generation", "Image Generation"],
-  ["pdf", "PDF Workspace"], ["shell", "Shell / PowerShell"], ["widgets", "HUD Widgets"], ["hud", "JARVIS HUD"],
-  ["three_d", "3D Interface"], ["image_viewer", "Image Viewer / Drop Zone"], ["notifications", "Proactive Notifications"],
-  ["security", "Approval / Vault / Audit / Sandbox"], ["mesh", "PC / Mobile Mesh"],
-].map(([id, name]) => ({ id, name, layer: "", status: "adapter" }));
+  ["brain", "Brain / Planner / Supervisor", "core", "implemented", "standard"],
+  ["memory", "Persistent Memory", "core", "implemented", "standard"],
+  ["autonomous_tasks", "Long Tasks / Autonomous Coding", "core", "implemented", "approval"],
+  ["voice", "Voice / Wake Word / TTS", "input-output", "implemented", "standard"],
+  ["computer_control", "Computer Control", "automation", "implemented", "approval"],
+  ["web", "Web Search / Browser Agent", "tools", "implemented", "approval"],
+  ["screen_vision", "Screen Vision / OCR", "vision", "implemented", "standard"],
+  ["camera", "Camera Vision", "vision", "adapter", "permission"],
+  ["image_generation", "Image Generation", "multimodal", "adapter", "provider"],
+  ["pdf", "PDF Workspace", "multimodal", "adapter", "standard"],
+  ["shell", "Shell / PowerShell", "automation", "adapter", "approval"],
+  ["widgets", "HUD Widgets", "ui", "implemented", "standard"],
+  ["hud", "JARVIS HUD", "ui", "implemented", "standard"],
+  ["three_d", "3D Interface", "ui", "implemented", "standard"],
+  ["image_viewer", "Image Viewer / Drop Zone", "ui", "adapter", "standard"],
+  ["notifications", "Proactive Notifications", "core", "implemented", "standard"],
+  ["security", "Approval / Vault / Audit / Sandbox", "security", "implemented", "mandatory"],
+  ["mesh", "PC / Mobile Mesh", "connectivity", "implemented", "standard"],
+].map(([id, name, layer, status, safety]) => ({ id, name, layer, status, safety }));
 
 export function JarvisHUD() {
   const [items, setItems] = useState<Capability[]>(fallback);
