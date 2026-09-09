@@ -5,6 +5,7 @@ const fs = require('fs');
 
 let backend = null;
 let ollama = null;
+let backendOwned = false;
 
 function projectRoot() {
   return path.resolve(__dirname, '..');
@@ -29,7 +30,8 @@ function findOllama() {
   const candidates = [
     process.env.OLLAMA_EXE,
     process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Programs', 'Ollama', 'ollama.exe'),
-    process.env.ProgramFiles && path.join(process.env.ProgramFiles, 'Ollama', 'ollama.exe')
+    process.env.ProgramFiles && path.join(process.env.ProgramFiles, 'Ollama', 'ollama.exe'),
+    process.env['ProgramFiles(x86)'] && path.join(process.env['ProgramFiles(x86)'], 'Ollama', 'ollama.exe')
   ].filter(Boolean);
   return candidates.find((p) => fs.existsSync(p)) || 'ollama.exe';
 }
@@ -97,14 +99,22 @@ function startBackend() {
         : (process.env.ULTRON_WORKSPACE || projectRoot())
     }
   });
+  backendOwned = true;
 
   backend.on('error', (err) => {
     dialog.showErrorBox('ULTRON Backend', `Backend başlatılamadı.\n\n${err.message}`);
+  });
+
+  backend.on('exit', () => {
+    backend = null;
+    backendOwned = false;
   });
 }
 
 async function ensureBackend(timeoutMs = 25000) {
   if (await backendReady()) return true;
+  if (backend && !backend.killed) return false;
+
   startBackend();
 
   const started = Date.now();
@@ -113,6 +123,14 @@ async function ensureBackend(timeoutMs = 25000) {
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   return false;
+}
+
+function stopOwnedBackend() {
+  if (backendOwned && backend && !backend.killed) {
+    backend.kill();
+  }
+  backend = null;
+  backendOwned = false;
 }
 
 async function createWindow() {
@@ -152,6 +170,11 @@ async function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  if (!app.requestSingleInstanceLock()) {
+    app.quit();
+    return;
+  }
+
   try {
     fs.mkdirSync(path.join(app.getPath('userData'), 'workspace'), { recursive: true });
     await createWindow();
@@ -167,12 +190,14 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
-  if (backend && !backend.killed) backend.kill();
-  if (ollama && !ollama.killed) ollama.kill();
+  stopOwnedBackend();
+  // Ollama is intentionally left running; it may be shared by other local AI apps.
+  ollama = null;
   if (process.platform !== 'darwin') app.quit();
 });
 
 app.on('before-quit', () => {
-  if (backend && !backend.killed) backend.kill();
-  if (ollama && !ollama.killed) ollama.kill();
+  stopOwnedBackend();
+  // Never terminate Ollama here. ULTRON may have started it, but Ollama can be shared system-wide.
+  ollama = null;
 });
