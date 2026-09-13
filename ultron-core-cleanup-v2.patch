@@ -1,0 +1,86 @@
+diff --git a/frontend/src/components/ParticleSphere.tsx b/frontend/src/components/ParticleSphere.tsx
+--- a/frontend/src/components/ParticleSphere.tsx
++++ b/frontend/src/components/ParticleSphere.tsx
+@@ -49,7 +49,7 @@ export function ParticleSphere() {
+     const WHITE = new THREE.Color("#f2f2f2");
+ 
+     // ------------------------------------------------------------------
+-    // 1) Partikül küresi — ~3800 partikül, kırmızı + beyaz karışım
++    // 1) Partikül küresi — kompakt ve sade, kırmızı + beyaz karışım
+     // ------------------------------------------------------------------
+-    const RADIUS = 4;
++    const RADIUS = 3.25;
+     const N = 3800;
+@@ -104,44 +104,10 @@ export function ParticleSphere() {
+     const glow = new THREE.Sprite(glowMat);
+-    glow.scale.setScalar(5.5);
++    glow.scale.setScalar(4.2);
+     scene.add(glow);
+ 
+     // ------------------------------------------------------------------
+-    // 2) Orbital / holografik halkalar (3 adet, hafif şeffaf)
++    // 2) Minimal halo — büyük orbital halkalar bilinçli olarak kaldırıldı.
+     // ------------------------------------------------------------------
+-    const rings: THREE.Mesh[] = [];
+-    const ringMats: THREE.MeshBasicMaterial[] = [];
+-    const ringDefs = [
+-      { r: 4.7, tilt: Math.PI / 2.1, op: 0.5 },
+-      { r: 5.5, tilt: Math.PI / 3.2, op: 0.34 },
+-      { r: 6.4, tilt: Math.PI / 1.7, op: 0.22 },
+-    ];
+-    ringDefs.forEach((d) => {
+-      const m = T(new THREE.MeshBasicMaterial({ color: RED, transparent: true, opacity: d.op, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+-      ringMats.push(m);
+-      const ring = new THREE.Mesh(T(new THREE.TorusGeometry(d.r, 0.012, 8, 160)), m);
+-      ring.rotation.x = d.tilt;
+-      rings.push(ring);
+-      scene.add(ring);
+-    });
+-
+-    // kesikli iç halka (referanstaki noktalı çember hissi)
+-    const dotRingGeo = T(new THREE.BufferGeometry());
+-    const DR = 320;
+-    const dpos = new Float32Array(DR * 3);
+-    for (let i = 0; i < DR; i++) {
+-      const a = (i / DR) * Math.PI * 2;
+-      dpos[i * 3] = Math.cos(a) * 4.25;
+-      dpos[i * 3 + 1] = Math.sin(a) * 4.25;
+-      dpos[i * 3 + 2] = 0;
+-    }
+-    dotRingGeo.setAttribute("position", new THREE.BufferAttribute(dpos, 3));
+-    const dotMat = T(new THREE.PointsMaterial({ color: RED2, size: 0.04, transparent: true, opacity: 0.6, blending: THREE.AdditiveBlending, depthWrite: false }));
+-    const dotRing = new THREE.Points(dotRingGeo, dotMat);
+-    dotRing.rotation.x = Math.PI / 2.3;
+-    scene.add(dotRing);
+ 
+     // ------------------------------------------------------------------
+     // resize
+@@ -181,9 +147,9 @@ export function ParticleSphere() {
+       const amp = speaking ? ttsLevel.current : 0;
+ 
+-      // tema kırmızılına uygula (varsayılan CRIMSON → #ff1e42'e yakın)
++      // Tema kırmızısını uygula.
+       const th = resolveTheme(st.theme, alert);
+       RED.set(th.red);
+-      ringMats.forEach((m) => m.color.copy(RED));
+       glowMat.color.copy(RED);
+-      dotMat.color.copy(RED2);
+ 
+       // hedef ölçek (LISTENING nefes alır, SPEAKING sesle pulse eder)
+@@ -218,14 +184,7 @@ export function ParticleSphere() {
+       pMat.size = 0.05 + amp * 0.02 + (listening ? 0.008 : 0);
+-
+-      // halkalar
+-      const ringSpeed = thinking ? 1.6 : alert ? 2.6 : listening ? 0.9 : 0.35;
+-      rings.forEach((r, i) => {
+-        r.rotation.z += dt * ringSpeed * (i % 2 ? -1 : 1);
+-        r.rotation.y += dt * ringSpeed * 0.3;
+-      });
+-      dotRing.rotation.z += dt * ringSpeed * 0.6;
+ 
+       // merkez ışıması nefes alır + sesle titreşir
+       glowMat.opacity = 0.4 + 0.12 * Math.sin(t * 1.6) + amp * 0.5 + (thinking ? 0.12 : 0);
+-      glow.scale.setScalar(5.2 + Math.sin(t * 1.3) * 0.3 + amp * 1.2);
++      glow.scale.setScalar(4.0 + Math.sin(t * 1.3) * 0.22 + amp * 0.9);
+ 
+       renderer.render(scene, camera);

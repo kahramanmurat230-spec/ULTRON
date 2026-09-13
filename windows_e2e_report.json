@@ -1,0 +1,200 @@
+{
+  "generated": "2026-09-09T19:29:03.667960+00:00",
+  "machine": {
+    "os": "Windows 11 (10.0.26200)",
+    "python": "3.13.14",
+    "argv": []
+  },
+  "duration_sec": 308.5,
+  "summary": {
+    "1": {
+      "PASS": 7,
+      "FAIL": 1,
+      "UNVERIFIED": 0,
+      "SKIP": 0,
+      "INFO": 0
+    },
+    "2": {
+      "PASS": 0,
+      "FAIL": 1,
+      "UNVERIFIED": 0,
+      "SKIP": 0,
+      "INFO": 0
+    },
+    "3": {
+      "PASS": 0,
+      "FAIL": 0,
+      "UNVERIFIED": 1,
+      "SKIP": 0,
+      "INFO": 0
+    },
+    "4": {
+      "PASS": 0,
+      "FAIL": 1,
+      "UNVERIFIED": 0,
+      "SKIP": 0,
+      "INFO": 0
+    },
+    "5": {
+      "PASS": 10,
+      "FAIL": 1,
+      "UNVERIFIED": 0,
+      "SKIP": 0,
+      "INFO": 0
+    },
+    "6": {
+      "PASS": 0,
+      "FAIL": 2,
+      "UNVERIFIED": 0,
+      "SKIP": 0,
+      "INFO": 0
+    }
+  },
+  "verdict": "FAIL — düzeltilmesi gereken bulgular var",
+  "results": [
+    {
+      "phase": "1",
+      "name": "Windows işletim sistemi",
+      "status": "PASS",
+      "evidence": "sys.platform=win32 platform=Windows release=11 version=10.0.26200"
+    },
+    {
+      "phase": "1",
+      "name": "Python >= 3.10",
+      "status": "PASS",
+      "evidence": "3.13.14 (tags/v3.13.14:fd17997, Jun 10 2026, 13:03:48) [MSC v.1944 64 bit (AMD64)]"
+    },
+    {
+      "phase": "1",
+      "name": "git",
+      "status": "PASS",
+      "evidence": "git version 2.55.0.windows.3"
+    },
+    {
+      "phase": "1",
+      "name": "node",
+      "status": "PASS",
+      "evidence": "v24.19.0"
+    },
+    {
+      "phase": "1",
+      "name": "npm",
+      "status": "FAIL",
+      "evidence": "bulunamadı"
+    },
+    {
+      "phase": "1",
+      "name": "ollama ikilisi",
+      "status": "PASS",
+      "evidence": "ollama version is 0.33.3"
+    },
+    {
+      "phase": "1",
+      "name": "Ollama servisi (11434)",
+      "status": "PASS",
+      "evidence": "HTTP 200 :: {'version': '0.33.3'}"
+    },
+    {
+      "phase": "1",
+      "name": "model hazır: qwen2.5-coder:7b",
+      "status": "PASS",
+      "evidence": "yüklü modeller: ['qwen2.5-coder:7b', 'llava:7b', 'qwen3:4b', 'qwen3:8b']"
+    },
+    {
+      "phase": "2",
+      "name": "gerçek backend başlatma",
+      "status": "FAIL",
+      "evidence": "boot başarısız; log kuyruğu: : True, 'mode': 'reframe'}\n[ULTRON-HEALTH] sqlite_ok: True\n[ULTRON-HEALTH] runtime: online\n[ULTRON-HEALTH] sovereign: {'sovereign_mode': True, 'llm': {'endpoint': 'http://127.0.0.1:11434', 'local': True, 'status': 'PASS'}, 'tts': {'backend': 'piper-local', 'local': False, 'status': 'CLOUD'}, 'stt': {'local': True, 'status': 'PASS'}, 'denied_calls': []}\n[ULTRON-HEALTH] sovereign_status: ENFORCED\n[ULTRON-DOCTOR] overall=PASS :: Boss, teşhis tamam: 6/6 bölüm kusursuz. Tüm zorunlu kontroller geçti.\n"
+    },
+    {
+      "phase": "3",
+      "name": "ajan E2E",
+      "status": "UNVERIFIED",
+      "evidence": "Faz 2 backend'i çalışmadı"
+    },
+    {
+      "phase": "4",
+      "name": "modül içe aktarımı",
+      "status": "FAIL",
+      "evidence": "ModuleNotFoundError: No module named 'app.security.shell_policy'"
+    },
+    {
+      "phase": "5",
+      "name": "playwright paketi",
+      "status": "PASS",
+      "evidence": "import OK "
+    },
+    {
+      "phase": "5",
+      "name": "playwright chromium",
+      "status": "PASS",
+      "evidence": "sayfa metni='ultron'"
+    },
+    {
+      "phase": "5",
+      "name": "pyautogui paketi",
+      "status": "PASS",
+      "evidence": "import OK "
+    },
+    {
+      "phase": "5",
+      "name": "pyautogui ekran görüntüsü",
+      "status": "PASS",
+      "evidence": "ultron_win_e2e_shot.png boyut=188436"
+    },
+    {
+      "phase": "5",
+      "name": "OCR (tesseract)",
+      "status": "FAIL",
+      "evidence": "okunan='ULTRONT23' (tesseract.exe PATH'te olmalı)"
+    },
+    {
+      "phase": "5",
+      "name": "ses cihazları (sounddevice)",
+      "status": "PASS",
+      "evidence": "22 cihaz"
+    },
+    {
+      "phase": "5",
+      "name": "kamera (cv2)",
+      "status": "PASS",
+      "evidence": "frame okundu=True"
+    },
+    {
+      "phase": "5",
+      "name": "edge_tts paketi",
+      "status": "PASS",
+      "evidence": "import OK "
+    },
+    {
+      "phase": "5",
+      "name": "pvporcupine paketi",
+      "status": "PASS",
+      "evidence": "import OK "
+    },
+    {
+      "phase": "5",
+      "name": "Windows ses bildirimi (winsound)",
+      "status": "PASS",
+      "evidence": "MessageBeep OK"
+    },
+    {
+      "phase": "5",
+      "name": "windows_tools notepad aç/kapat",
+      "status": "PASS",
+      "evidence": "close→notepad.exe kapatıldı (rc=0)"
+    },
+    {
+      "phase": "6",
+      "name": "backend pytest paketi",
+      "status": "FAIL",
+      "evidence": "rc=1 :: 181 failed, 731 passed, 4 skipped in 135.95s (0:02:15)"
+    },
+    {
+      "phase": "6",
+      "name": "frontend npm build",
+      "status": "FAIL",
+      "evidence": "install rc=None build rc=None :: bulunamadı"
+    }
+  ]
+}

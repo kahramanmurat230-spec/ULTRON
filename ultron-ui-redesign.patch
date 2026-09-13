@@ -1,0 +1,1273 @@
+From 01277d6d0a845df206f0602c1984b104abf3790c Mon Sep 17 00:00:00 2001
+From: kahramanmurat230-spec <kahramanmurat230-spec@users.noreply.github.com>
+Date: Mon, 7 Sep 2026 19:15:58 +0000
+Subject: [PATCH] =?UTF-8?q?feat(frontend):=20ULTRON=20Void=20Core=20UI=20?=
+ =?UTF-8?q?=E2=80=94=20particle=20sphere=20+=20terminal=20console?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Referans görsele göre frontend arayüzü tamamen yeniden tasarlandı.
+
+- ParticleSphere.tsx: 3800 partiküllü kırmızı+beyaz küre (r=4), 3 orbital
+  halka + noktalı iç çember, merkezde ULTRON üçgeni (SVG overlay). Ajan
+  durumuna göre animasyon: IDLE nefes / LISTENING büyüme / THINKING türbülans
+  / SPEAKING ttsLevel ile ritimli pulse.
+- TerminalChat.tsx: sol panel, ULTRON logosu + 'YOUR PERSONAL AI ASSISTANT',
+  monospace kırmızı '> Sen:' / 'ULTRON:' konuşma geçmişi, canlı cursor.
+- PTTBar.tsx: alt bar minimal Push-To-Talk, mevcut /api/voice/ptt akışına
+  bağlı (Whisper STT korunur, Web Speech eklenmedi). IDLE/LISTENING/THINKING/
+  SPEAKING faz göstergesi.
+- store.ts: chat: ChatLine[] + pushChat helper.
+- api.ts: user komutları ve ULTRON yanıtları terminale echo'lanır; tüm WS/API
+  ve voice mantığı korundu.
+- index.css/App.tsx/themes.ts: siyah zemin (#000) + #ff1a1a/#ff3b3b/#f2f2f2
+  paleti, iki panelli düzen. Eski grid componentleri (HoloHead3D, CommandCenter)
+  kaldırıldı. Drawer/Modals/Electron/backend dokunulmadı.
+---
+ frontend/src/App.tsx                       |  47 ++--
+ frontend/src/components/CommandCenter.tsx  |  96 -------
+ frontend/src/components/HoloHead3D.tsx     | 226 ----------------
+ frontend/src/components/PTTBar.tsx         |  52 ++++
+ frontend/src/components/ParticleSphere.tsx | 293 +++++++++++++++++++++
+ frontend/src/components/TerminalChat.tsx   | 108 ++++++++
+ frontend/src/index.css                     | 155 ++++++++++-
+ frontend/src/lib/api.ts                    |  37 ++-
+ frontend/src/lib/store.ts                  |  22 ++
+ frontend/src/styles/themes.ts              |   2 +-
+ 10 files changed, 664 insertions(+), 374 deletions(-)
+ delete mode 100644 frontend/src/components/CommandCenter.tsx
+ delete mode 100644 frontend/src/components/HoloHead3D.tsx
+ create mode 100644 frontend/src/components/PTTBar.tsx
+ create mode 100644 frontend/src/components/ParticleSphere.tsx
+ create mode 100644 frontend/src/components/TerminalChat.tsx
+
+diff --git a/frontend/src/App.tsx b/frontend/src/App.tsx
+index edda5d3..79530d5 100644
+--- a/frontend/src/App.tsx
++++ b/frontend/src/App.tsx
+@@ -1,18 +1,20 @@
+ import { Layers, Settings } from "lucide-react";
+-import { useEffect, useState } from "react";
++import { useEffect } from "react";
+ import { useVoice } from "./hooks/useVoice";
+ import { connectWS } from "./lib/api";
+ import { setState, useApp } from "./lib/store";
+ import { applyTheme, saveTheme } from "./styles/themes";
+-import { CommandCenter } from "./components/CommandCenter";
+-import { HoloHead3D } from "./components/HoloHead3D";
++import { ParticleSphere } from "./components/ParticleSphere";
++import { TerminalChat } from "./components/TerminalChat";
++import { PTTBar } from "./components/PTTBar";
+ import { Drawer } from "./components/Drawer";
+ import { Modals } from "./components/Modals";
+ 
+ /**
+- * ULTRON V12.3 — Cinematic Void HUD.
+- * No panels, no grids: obsidian void + 3D HoloHead + reactive waveform +
+- * film subtitle + corner reticles. Details live behind the Drawer.
++ * ULTRON — Void Core UI.
++ * Siyah zemin · solda minimal terminal/sohbet · merkez/sağda büyük partikül
++ * küresi + orbital halkalar + merkez üçgen · altta Push-To-Talk barı.
++ * Tüm backend/WS/voice mantığı korunur; drawer & modallar ghost köşeden erişilir.
+  */
+ export default function App() {
+   const minimized = useApp((s) => s.minimized);
+@@ -20,7 +22,6 @@ export default function App() {
+   const theme = useApp((s) => s.theme);
+   const agentState = useApp((s) => s.agentState);
+   const voice = useVoice();
+-  const [sov, setSov] = useState("—");
+ 
+   useEffect(() => {
+     applyTheme(theme, agentState === "ERROR");
+@@ -37,10 +38,6 @@ export default function App() {
+       if (!localStorage.getItem("ultron_theme")) saveTheme("CRIMSON");
+       localStorage.setItem("ultron_view", "cockpit");
+     } catch { /* private mode */ }
+-    fetch("/api/hud/overview")
+-      .then((r) => r.json())
+-      .then((d) => setSov(d?.health?.sovereign_status ?? "—"))
+-      .catch(() => undefined);
+   }, []);
+ 
+   useEffect(() => {
+@@ -63,7 +60,7 @@ export default function App() {
+     return (
+       <div className="overlay">
+         <div style={{ textAlign: "center" }}>
+-          <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: "0.4em", color: "var(--red)", textShadow: "0 0 20px rgba(255,36,56,.6)" }}>
++          <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: "0.4em", color: "var(--red)", textShadow: "0 0 20px rgba(255,26,26,.6)" }}>
+             SESSION TERMINATED
+           </div>
+           <div className="dim mono" style={{ fontSize: 10, margin: "10px 0 18px", letterSpacing: "0.14em" }}>
+@@ -78,27 +75,21 @@ export default function App() {
+   }
+ 
+   return (
+-    <div className="void">
+-      {/* HUD reticles — four corners */}
+-      <i className="reticle r-tl" />
+-      <i className="reticle r-tr" />
+-      <i className="reticle r-bl" />
+-      <i className="reticle r-br" />
+-
+-      {/* top-right: minimal boss + sovereign */}
+-      <div className="void-top">
+-        <span className="boss-mini">BOSS</span>
+-        <span className="sov-mini">🔒 {sov}</span>
+-      </div>
+-
++    <div className="ultron-root">
+       {!minimized && (
+         <>
+-          <HoloHead3D />
+-          <CommandCenter onVoice={voice.toggle} />
++          {/* sol: terminal / sohbet geçmişi */}
++          <TerminalChat />
++
++          {/* merkez / sağ: partikül küresi */}
++          <div className="stage-wrap">
++            <ParticleSphere />
++            <PTTBar onVoice={voice.toggle} />
++          </div>
+         </>
+       )}
+ 
+-      {/* ghost corner access — details behind the void */}
++      {/* ghost köşe erişimi — konsol & ayarlar (tüm backend sistemleri) */}
+       <div className="void-corner">
+         <button className="ghost" title="console" onClick={() => setState({ drawer: "hud" })}>
+           <Layers size={13} />
+diff --git a/frontend/src/components/CommandCenter.tsx b/frontend/src/components/CommandCenter.tsx
+deleted file mode 100644
+index 0576563..0000000
+--- a/frontend/src/components/CommandCenter.tsx
++++ /dev/null
+@@ -1,96 +0,0 @@
+-import { Mic } from "lucide-react";
+-import { useEffect, useRef, useState } from "react";
+-import { executeCommand } from "../lib/api";
+-import { audioLevel, useApp } from "../lib/store";
+-
+-/** Thin neon reactive waveform (mic amplitude when listening). */
+-function Waveform() {
+-  const mic = useApp((s) => s.mic);
+-  const ref = useRef<HTMLCanvasElement>(null);
+-  useEffect(() => {
+-    const cv = ref.current;
+-    if (!cv) return;
+-    const ctx = cv.getContext("2d");
+-    if (!ctx) return;
+-    let raf = 0;
+-    const draw = () => {
+-      raf = requestAnimationFrame(draw);
+-      const w = (cv.width = cv.offsetWidth * 2);
+-      const h = (cv.height = cv.offsetHeight * 2);
+-      ctx.clearRect(0, 0, w, h);
+-      const mid = h / 2;
+-      ctx.strokeStyle = "rgba(255,36,56,.25)";
+-      ctx.lineWidth = 1;
+-      ctx.beginPath();
+-      ctx.moveTo(0, mid);
+-      ctx.lineTo(w, mid);
+-      ctx.stroke();
+-      const n = 110;
+-      for (let i = 0; i < n; i++) {
+-        const v = mic === "listening" ? audioLevel.current * (0.4 + 0.6 * Math.abs(Math.sin(i * 0.7 + performance.now() / 90))) : 0;
+-        const x = (i / (n - 1)) * w;
+-        const bh = Math.max(1, v * (h - 6));
+-        ctx.strokeStyle = `rgba(255,36,56,${0.25 + v * 0.75})`;
+-        ctx.lineWidth = 2;
+-        ctx.beginPath();
+-        ctx.moveTo(x, mid - bh);
+-        ctx.lineTo(x, mid + bh);
+-        ctx.stroke();
+-      }
+-    };
+-    raf = requestAnimationFrame(draw);
+-    return () => cancelAnimationFrame(raf);
+-  }, [mic]);
+-  return <canvas ref={ref} className="wave" />;
+-}
+-
+-/** Cinematic void command bar: waveform + film subtitle + slim input. */
+-export function CommandCenter({ onVoice, className }: { onVoice: () => void; className?: string }) {
+-  const events = useApp((s) => s.agentEvents);
+-  const mic = useApp((s) => s.mic);
+-  const [text, setText] = useState("");
+-  const [err, setErr] = useState<string | null>(null);
+-  const inputRef = useRef<HTMLInputElement>(null);
+-
+-  const last = [...events].reverse().find((e) => (e.state === "DONE" || e.state === "ERROR") && e.message)?.message;
+-
+-  const submit = async () => {
+-    const t = text.trim();
+-    if (!t) return;
+-    setErr(null);
+-    setText("");
+-    try {
+-      const r = await executeCommand(t);
+-      if (!r.ok) setErr(r.error ?? "command rejected");
+-    } catch (e) {
+-      setErr(e instanceof Error ? e.message : "backend unreachable");
+-    }
+-  };
+-
+-  return (
+-    <div className={"void-cmd" + (className ? " " + className : "")}>
+-      <Waveform />
+-      <div className="subtitle">{last ?? "…"}</div>
+-      <div className="void-row">
+-        <input
+-          ref={inputRef}
+-          className="void-input"
+-          placeholder="komut fısılda…"
+-          value={text}
+-          onChange={(e) => setText(e.target.value)}
+-          onKeyDown={(e) => {
+-            if (e.key === "Enter") void submit();
+-          }}
+-        />
+-        <button
+-          className={"mic-btn" + (mic === "listening" ? " live" : mic === "unavailable" ? " dead" : "")}
+-          title="voice"
+-          onClick={onVoice}
+-        >
+-          <Mic size={15} />
+-        </button>
+-      </div>
+-      {err && <div className="mono void-err">⚠ {err}</div>}
+-    </div>
+-  );
+-}
+diff --git a/frontend/src/components/HoloHead3D.tsx b/frontend/src/components/HoloHead3D.tsx
+deleted file mode 100644
+index bb4e9e8..0000000
+--- a/frontend/src/components/HoloHead3D.tsx
++++ /dev/null
+@@ -1,226 +0,0 @@
+-import { useEffect, useRef } from "react";
+-import * as THREE from "three";
+-import { ttsLevel } from "../lib/tts";
+-import { getState, useApp } from "../lib/store";
+-import { resolveTheme } from "../styles/themes";
+-
+-/**
+- * HoloHead3D — procedural cybernetic head (Three.js, light).
+- * Mouse parallax look-at · state animations · theme-aware accent ·
+- * SPEAKING jaw/eye sync via ttsLevel · DEEP_COMPUTE neuron particles.
+- */
+-export function HoloHead3D() {
+-  const ref = useRef<HTMLDivElement>(null);
+-  const agentState = useApp((s) => s.agentState);
+-  const theme = useApp((s) => s.theme);
+-
+-  useEffect(() => {
+-    const mount = ref.current;
+-    if (!mount) return;
+-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
+-    renderer.setClearColor(0x000000, 0);
+-    mount.appendChild(renderer.domElement);
+-
+-    const scene = new THREE.Scene();
+-    const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 50);
+-    camera.position.set(0, 0.1, 4.4);
+-
+-    scene.add(new THREE.AmbientLight(0x334455, 1.4));
+-    const key = new THREE.PointLight(0xffffff, 8, 10, 2);
+-    key.position.set(1.5, 1.5, 2.5);
+-    scene.add(key);
+-
+-    const disposables: { dispose: () => void }[] = [];
+-    const T = <X extends { dispose: () => void }>(d: X): X => (disposables.push(d), d);
+-
+-    const accent = { cur: new THREE.Color("#ff1e42"), cyan: new THREE.Color("#38e1ff") };
+-    const metal = T(new THREE.MeshStandardMaterial({ color: 0x141a24, metalness: 0.92, roughness: 0.3, flatShading: true }));
+-    const dark = T(new THREE.MeshStandardMaterial({ color: 0x0a0e16, metalness: 0.85, roughness: 0.5, flatShading: true }));
+-    const eyeMat = T(new THREE.MeshBasicMaterial({ color: 0xff1e42 }));
+-    const mouthMat = T(new THREE.MeshBasicMaterial({ color: 0xff1e42, transparent: true, opacity: 0.5 }));
+-
+-    const head = new THREE.Group();
+-    const skull = new THREE.Mesh(T(new THREE.SphereGeometry(0.5, 24, 18)), metal);
+-    skull.scale.set(0.8, 1, 0.9);
+-    skull.position.y = 0.15;
+-    head.add(skull);
+-    const crest = new THREE.Mesh(T(new THREE.BoxGeometry(0.06, 0.18, 0.55)), dark);
+-    crest.position.set(0, 0.55, -0.02);
+-    head.add(crest);
+-    const face = new THREE.Mesh(T(new THREE.BoxGeometry(0.46, 0.4, 0.22)), metal);
+-    face.position.set(0, 0.02, 0.3);
+-    head.add(face);
+-    const brow = new THREE.Mesh(T(new THREE.BoxGeometry(0.42, 0.07, 0.1)), dark);
+-    brow.position.set(0, 0.24, 0.38);
+-    brow.rotation.x = -0.2;
+-    head.add(brow);
+-    const eyes: THREE.Mesh[] = [];
+-    for (const s of [-1, 1]) {
+-      const e = new THREE.Mesh(T(new THREE.SphereGeometry(0.055, 12, 10)), eyeMat);
+-      e.scale.set(1.6, 0.7, 0.5);
+-      e.position.set(0.12 * s, 0.14, 0.42);
+-      head.add(e);
+-      eyes.push(e);
+-      const ear = new THREE.Mesh(T(new THREE.CylinderGeometry(0.1, 0.1, 0.06, 14)), dark);
+-      ear.rotation.z = Math.PI / 2;
+-      ear.position.set(0.42 * s, 0.1, 0);
+-      head.add(ear);
+-    }
+-    const jaw = new THREE.Group();
+-    jaw.position.set(0, -0.12, 0.16);
+-    const chin = new THREE.Mesh(T(new THREE.BoxGeometry(0.34, 0.14, 0.24)), metal);
+-    chin.position.set(0, -0.1, 0.18);
+-    jaw.add(chin);
+-    const mouth = new THREE.Mesh(T(new THREE.BoxGeometry(0.24, 0.016, 0.05)), mouthMat);
+-    mouth.position.set(0, -0.02, 0.34);
+-    jaw.add(mouth);
+-    head.add(jaw);
+-    const neck = new THREE.Mesh(T(new THREE.CylinderGeometry(0.12, 0.17, 0.34, 12)), dark);
+-    neck.position.y = -0.52;
+-    head.add(neck);
+-    scene.add(head);
+-
+-    // data rings (LISTENING spins faster)
+-    const rings: THREE.Mesh[] = [];
+-    const ringMats: THREE.MeshBasicMaterial[] = [];
+-    for (let i = 0; i < 3; i++) {
+-      const m = T(new THREE.MeshBasicMaterial({ color: i % 2 ? 0x38e1ff : 0xff1e42, transparent: true, opacity: 0.45, blending: THREE.AdditiveBlending, depthWrite: false }));
+-      ringMats.push(m);
+-      const r = new THREE.Mesh(T(new THREE.TorusGeometry(0.95 + i * 0.18, 0.008, 8, 90)), m);
+-      rings.push(r);
+-      scene.add(r);
+-    }
+-    // neuron particles (DEEP_COMPUTE accelerates)
+-    const N = 260;
+-    const base = new Float32Array(N * 3);
+-    for (let i = 0; i < N; i++) {
+-      const r = 0.28 + Math.random() * 0.2;
+-      const th = Math.random() * Math.PI * 2;
+-      const ph = Math.acos(2 * Math.random() - 1);
+-      base[i * 3] = r * Math.sin(ph) * Math.cos(th);
+-      base[i * 3 + 1] = 0.12 + r * Math.cos(ph);
+-      base[i * 3 + 2] = r * Math.sin(ph) * Math.sin(th);
+-    }
+-    const pGeo = T(new THREE.BufferGeometry());
+-    pGeo.setAttribute("position", new THREE.BufferAttribute(base.slice(), 3));
+-    const pMat = T(new THREE.PointsMaterial({ color: 0xff1e42, size: 0.02, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false }));
+-    const neurons = new THREE.Points(pGeo, pMat);
+-    scene.add(neurons);
+-    // glow sprite
+-    const gc = document.createElement("canvas");
+-    gc.width = gc.height = 128;
+-    const g2 = gc.getContext("2d")!;
+-    const grad = g2.createRadialGradient(64, 64, 0, 64, 64, 64);
+-    grad.addColorStop(0, "rgba(255,255,255,.9)");
+-    grad.addColorStop(0.4, "rgba(255,60,80,.35)");
+-    grad.addColorStop(1, "rgba(255,60,80,0)");
+-    g2.fillStyle = grad;
+-    g2.fillRect(0, 0, 128, 128);
+-    const glowTex = T(new THREE.CanvasTexture(gc));
+-    const glowMat = T(new THREE.SpriteMaterial({ map: glowTex, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false }));
+-    const glow = new THREE.Sprite(glowMat);
+-    glow.scale.setScalar(3.4);
+-    scene.add(glow);
+-
+-    // mouse parallax
+-    const mouse = { x: 0, y: 0 };
+-    const onMove = (e: MouseEvent) => {
+-      mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+-      mouse.y = (e.clientY / window.innerHeight) * 2 - 1;
+-    };
+-    window.addEventListener("mousemove", onMove);
+-
+-    const resize = () => {
+-      const w = mount.clientWidth || 1, h = mount.clientHeight || 1;
+-      renderer.setSize(w, h);
+-      camera.aspect = w / h;
+-      camera.updateProjectionMatrix();
+-    };
+-    resize();
+-    const ro = new ResizeObserver(resize);
+-    ro.observe(mount);
+-
+-    const clock = new THREE.Clock();
+-    let raf = 0;
+-    const loop = () => {
+-      raf = requestAnimationFrame(loop);
+-      const dt = Math.min(clock.getDelta(), 0.05);
+-      const t = clock.elapsedTime;
+-      const st = getState();
+-      const state = st.agentState;
+-      const alert = state === "ERROR";
+-      const th = resolveTheme(st.theme, alert);
+-      accent.cur.lerp(new THREE.Color(th.red), 0.08);
+-      accent.cyan.lerp(new THREE.Color(th.cyan), 0.08);
+-      eyeMat.color.copy(accent.cur);
+-      mouthMat.color.copy(accent.cur);
+-      pMat.color.copy(accent.cur);
+-      ringMats[0].color.copy(accent.cur);
+-      ringMats[1].color.copy(accent.cyan);
+-      ringMats[2].color.copy(accent.cur);
+-      key.color.copy(accent.cur).lerp(new THREE.Color("#ffffff"), 0.6);
+-
+-      // IDLE floating bob + breathing glow
+-      const speaking = st.ttsSpeaking;
+-      const amp = speaking ? ttsLevel.current : 0;
+-      head.position.y = Math.sin(t * 1.1) * 0.05;
+-      glowMat.opacity = 0.35 + 0.12 * Math.sin(t * 1.6) + amp * 0.5;
+-
+-      // mouse parallax look-at (smooth lerp)
+-      const tx = mouse.x * 0.55, ty = -mouse.y * 0.3;
+-      head.rotation.y += (tx - head.rotation.y) * Math.min(1, dt * 5);
+-      head.rotation.x += (ty - head.rotation.x) * Math.min(1, dt * 5);
+-
+-      // state animations
+-      const listening = state === "LISTENING" || st.mic === "listening";
+-      const deep = ["THINKING", "PLANNING", "EXECUTING", "VERIFYING"].includes(state);
+-      const ringSpeed = listening ? 2.6 : deep ? 1.6 : alert ? 4 : 0.5;
+-      rings.forEach((r, i) => {
+-        r.rotation.z += dt * ringSpeed * (i % 2 ? -1 : 1);
+-        r.rotation.x = Math.PI / 2.4 + Math.sin(t * 0.5 + i) * 0.3;
+-      });
+-      const eyeBoost = listening ? 1.5 : alert ? 2.2 : 1 + amp * 2;
+-      eyes.forEach((e) => e.scale.set(1.6 * eyeBoost * 0.75, 0.7 * (listening ? 1.2 : 1), 0.5));
+-      // SPEAKING jaw sync
+-      jaw.rotation.x = amp * 0.45 + (speaking ? 0.05 * Math.sin(t * 30) : 0);
+-      mouthMat.opacity = 0.35 + amp * 0.65;
+-      // DEEP_COMPUTE neurons
+-      const nspeed = deep ? 3.4 : alert ? 5 : 0.6;
+-      neurons.rotation.y += dt * nspeed;
+-      const pos = pGeo.getAttribute("position") as THREE.BufferAttribute;
+-      const arr = pos.array as Float32Array;
+-      const ag = deep || alert ? 0.05 : 0.015;
+-      for (let i = 0; i < N; i++) {
+-        const k = 1 + Math.sin(t * (2 + nspeed) + i) * ag;
+-        arr[i * 3] = base[i * 3] * k;
+-        arr[i * 3 + 1] = base[i * 3 + 1] * k;
+-        arr[i * 3 + 2] = base[i * 3 + 2] * k;
+-      }
+-      pos.needsUpdate = true;
+-
+-      renderer.render(scene, camera);
+-    };
+-    raf = requestAnimationFrame(loop);
+-
+-    return () => {
+-      cancelAnimationFrame(raf);
+-      ro.disconnect();
+-      window.removeEventListener("mousemove", onMove);
+-      disposables.forEach((d) => d.dispose());
+-      renderer.dispose();
+-      if (renderer.domElement.parentElement === mount) mount.removeChild(renderer.domElement);
+-    };
+-  }, []);
+-
+-  return (
+-    <div className="core-stage" style={{ position: "relative" }}>
+-      <div ref={ref} style={{ position: "absolute", inset: 0 }} />
+-      <div className="core-state-chip">{agentState}</div>
+-      <div className="core-label">
+-        <div className="t" style={{ color: "var(--red)" }}>ULTRON</div>
+-        <div className="s">V15.0.0 · HOLO-HEAD</div>
+-      </div>
+-    </div>
+-  );
+-}
+diff --git a/frontend/src/components/PTTBar.tsx b/frontend/src/components/PTTBar.tsx
+new file mode 100644
+index 0000000..d6141ae
+--- /dev/null
++++ b/frontend/src/components/PTTBar.tsx
+@@ -0,0 +1,52 @@
++import { Mic } from "lucide-react";
++import { useApp } from "../lib/store";
++
++export type PhaseLabel = "IDLE" | "LISTENING" | "THINKING" | "SPEAKING";
++
++/** Ajanın anlık faz etiketini store'dan türet (küre animasyonuyla aynı mantık). */
++export function derivePhase(): PhaseLabel {
++  const s = { mic: useApp((x) => x.mic), agent: useApp((x) => x.agentState), tts: useApp((x) => x.ttsSpeaking) };
++  if (s.tts) return "SPEAKING";
++  if (s.mic === "listening" || s.agent === "LISTENING") return "LISTENING";
++  if (["THINKING", "PLANNING", "EXECUTING", "VERIFYING"].includes(s.agent)) return "THINKING";
++  return "IDLE";
++}
++
++/**
++ * PTTBar — alt bar: minimal Push-To-Talk butonu.
++ *
++ * Mouse/parmak basılı → PTT turu başlar (mevcut /api/voice/ptt akışı,
++ * Whisper STT). onVoice, App'teki useVoice().toggle'a bağlıdır; Web Speech
++ * API KULLANILMAZ, backend PTT mantığı korunur. Sağda faz göstergesi.
++ */
++export function PTTBar({ onVoice }: { onVoice: () => void }) {
++  const phase = derivePhase();
++  const live = phase === "LISTENING";
++
++  const start = () => {
++    // basılı tutunca / dokununca yerel PTT turunu tetikle
++    if (phase !== "LISTENING") onVoice();
++  };
++  const stop = () => {
++    // aktifken bırakınca turu erken sonlandır (mic dinliyorsa)
++    if (phase === "LISTENING") onVoice();
++  };
++
++  return (
++    <div className="ptt-bar">
++      <button
++        className={"ptt-btn" + (live ? " live" : "")}
++        title="Push-To-Talk — bas ve konuş"
++        onPointerDown={start}
++        onPointerUp={stop}
++        onPointerLeave={() => { if (live) stop(); }}
++      >
++        <Mic size={18} />
++      </button>
++      <div className="ptt-meta">
++        <div className="ptt-label">PUSH-TO-TALK</div>
++        <div className={"ptt-phase p-" + phase.toLowerCase()}>{phase}</div>
++      </div>
++    </div>
++  );
++}
+diff --git a/frontend/src/components/ParticleSphere.tsx b/frontend/src/components/ParticleSphere.tsx
+new file mode 100644
+index 0000000..927e170
+--- /dev/null
++++ b/frontend/src/components/ParticleSphere.tsx
+@@ -0,0 +1,293 @@
++import { useEffect, useRef } from "react";
++import * as THREE from "three";
++import { ttsLevel } from "../lib/tts";
++import { getState } from "../lib/store";
++import { resolveTheme } from "../styles/themes";
++
++/**
++ * ParticleSphere — ULTRON'un merkezi holografik çekirdeği.
++ *
++ * Büyük partikül küresi (kırmızı + beyaz), orbital halkalar ve merkezde
++ * kırmızı ULTRON üçgeni (SVG overlay). Ajan durumuna göre canlanır:
++ *   IDLE       → sakin, yavaş nefes/pulse, düşük partikül hızı
++ *   LISTENING  → küre büyüyüp küçülür (nefes alma), partiküller aktifleşir
++ *   THINKING   → partiküller türbülansla hızlanır, halkalar hızlı döner
++ *   SPEAKING   → ttsLevel ile ritimli pulse (ses senkron)
++ * Backend/state mantığına dokunmaz; sadece getState() ile okur.
++ */
++export function ParticleSphere() {
++  const ref = useRef<HTMLDivElement>(null);
++
++  useEffect(() => {
++    const mount = ref.current;
++    if (!mount) return;
++
++    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
++    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
++    renderer.setClearColor(0x000000, 0);
++    mount.appendChild(renderer.domElement);
++
++    const scene = new THREE.Scene();
++    const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
++    camera.position.set(0, 0, 11);
++
++    const disposables: { dispose: () => void }[] = [];
++    const T = <X extends { dispose: () => void }>(d: X): X => (disposables.push(d), d);
++
++    // ---- renk paleti (referans görsel) ----
++    const RED = new THREE.Color("#ff1a1a");
++    const RED2 = new THREE.Color("#ff3b3b");
++    const WHITE = new THREE.Color("#f2f2f2");
++
++    // ------------------------------------------------------------------
++    // 1) Partikül küresi — ~3800 partikül, kırmızı + beyaz karışım
++    // ------------------------------------------------------------------
++    const RADIUS = 4;
++    const N = 3800;
++    const positions = new Float32Array(N * 3);
++    const colors = new Float32Array(N * 3);
++    const dirs = new Float32Array(N * 3); // birim yön vektörleri (pulse için)
++    const seeds = new Float32Array(N);    // partikül başına faz
++    for (let i = 0; i < N; i++) {
++      // düzgün küre dağılımı
++      const u = Math.random();
++      const v = Math.random();
++      const th = u * Math.PI * 2;
++      const ph = Math.acos(2 * v - 1);
++      const sx = Math.sin(ph) * Math.cos(th);
++      const sy = Math.sin(ph) * Math.sin(th);
++      const sz = Math.cos(ph);
++      // kabuk kalınlığı için hafif radyal jitter
++      const r = RADIUS * (0.9 + Math.random() * 0.14);
++      dirs[i * 3] = sx;
++      dirs[i * 3 + 1] = sy;
++      dirs[i * 3 + 2] = sz;
++      positions[i * 3] = sx * r;
++      positions[i * 3 + 1] = sy * r;
++      positions[i * 3 + 2] = sz * r;
++      seeds[i] = Math.random() * Math.PI * 2;
++      // ~%78 kırmızı tonları, ~%22 beyaz "parıltı" partikülleri
++      const c = Math.random() < 0.22 ? WHITE : (Math.random() < 0.5 ? RED : RED2);
++      colors[i * 3] = c.r;
++      colors[i * 3 + 1] = c.g;
++      colors[i * 3 + 2] = c.b;
++    }
++    const geo = T(new THREE.BufferGeometry());
++    geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
++    geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
++    const sprite = makeDiscTexture();
++    const pMat = T(new THREE.PointsMaterial({
++      size: 0.055,
++      map: sprite,
++      vertexColors: true,
++      transparent: true,
++      opacity: 0.95,
++      blending: THREE.AdditiveBlending,
++      depthWrite: false,
++      sizeAttenuation: true,
++    }));
++    disposables.push(sprite);
++    const points = new THREE.Points(geo, pMat);
++    const core = new THREE.Group();
++    core.add(points);
++    scene.add(core);
++
++    // iç "çekirdek" ışıması (merkez üçgenin arkasında kızıl hale)
++    const glowTex = makeGlowTexture();
++    disposables.push(glowTex);
++    const glowMat = T(new THREE.SpriteMaterial({ map: glowTex, color: RED, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false }));
++    const glow = new THREE.Sprite(glowMat);
++    glow.scale.setScalar(5.5);
++    scene.add(glow);
++
++    // ------------------------------------------------------------------
++    // 2) Orbital / holografik halkalar (3 adet, hafif şeffaf)
++    // ------------------------------------------------------------------
++    const rings: THREE.Mesh[] = [];
++    const ringMats: THREE.MeshBasicMaterial[] = [];
++    const ringDefs = [
++      { r: 4.7, tilt: Math.PI / 2.1, op: 0.5 },
++      { r: 5.5, tilt: Math.PI / 3.2, op: 0.34 },
++      { r: 6.4, tilt: Math.PI / 1.7, op: 0.22 },
++    ];
++    ringDefs.forEach((d) => {
++      const m = T(new THREE.MeshBasicMaterial({ color: RED, transparent: true, opacity: d.op, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
++      ringMats.push(m);
++      const ring = new THREE.Mesh(T(new THREE.TorusGeometry(d.r, 0.012, 8, 160)), m);
++      ring.rotation.x = d.tilt;
++      rings.push(ring);
++      scene.add(ring);
++    });
++
++    // kesikli iç halka (referanstaki noktalı çember hissi)
++    const dotRingGeo = T(new THREE.BufferGeometry());
++    const DR = 320;
++    const dpos = new Float32Array(DR * 3);
++    for (let i = 0; i < DR; i++) {
++      const a = (i / DR) * Math.PI * 2;
++      dpos[i * 3] = Math.cos(a) * 4.25;
++      dpos[i * 3 + 1] = Math.sin(a) * 4.25;
++      dpos[i * 3 + 2] = 0;
++    }
++    dotRingGeo.setAttribute("position", new THREE.BufferAttribute(dpos, 3));
++    const dotMat = T(new THREE.PointsMaterial({ color: RED2, size: 0.04, transparent: true, opacity: 0.6, blending: THREE.AdditiveBlending, depthWrite: false }));
++    const dotRing = new THREE.Points(dotRingGeo, dotMat);
++    dotRing.rotation.x = Math.PI / 2.3;
++    scene.add(dotRing);
++
++    // ------------------------------------------------------------------
++    // resize
++    // ------------------------------------------------------------------
++    const resize = () => {
++      const w = mount.clientWidth || 1;
++      const h = mount.clientHeight || 1;
++      renderer.setSize(w, h);
++      camera.aspect = w / h;
++      camera.updateProjectionMatrix();
++    };
++    resize();
++    const ro = new ResizeObserver(resize);
++    ro.observe(mount);
++
++    // ------------------------------------------------------------------
++    // animasyon döngüsü
++    // ------------------------------------------------------------------
++    const clock = new THREE.Clock();
++    const posAttr = geo.getAttribute("position") as THREE.BufferAttribute;
++    const arr = posAttr.array as Float32Array;
++    let curScale = 1;
++    let curTurb = 0;
++    let raf = 0;
++
++    const loop = () => {
++      raf = requestAnimationFrame(loop);
++      const dt = Math.min(clock.getDelta(), 0.05);
++      const t = clock.elapsedTime;
++      const st = getState();
++      const state = st.agentState;
++      const alert = state === "ERROR";
++      const listening = state === "LISTENING" || st.mic === "listening";
++      const thinking = ["THINKING", "PLANNING", "EXECUTING", "VERIFYING"].includes(state);
++      const speaking = st.ttsSpeaking;
++      const amp = speaking ? ttsLevel.current : 0;
++
++      // tema kızılını uygula (varsayılan CRIMSON → #ff1e42'e yakın)
++      const th = resolveTheme(st.theme, alert);
++      RED.set(th.red);
++      ringMats.forEach((m) => m.color.copy(RED));
++      glowMat.color.copy(RED);
++      dotMat.color.copy(RED2);
++
++      // hedef ölçek (LISTENING nefes alır, SPEAKING sesle pulse eder)
++      let targetScale = 1;
++      if (listening) targetScale = 1.08 + Math.sin(t * 2.4) * 0.09;
++      else if (speaking) targetScale = 1.02 + amp * 0.22;
++      else if (alert) targetScale = 1.05 + Math.sin(t * 8) * 0.05;
++      else targetScale = 1 + Math.sin(t * 0.9) * 0.02; // IDLE nazik nefes
++      curScale += (targetScale - curScale) * Math.min(1, dt * 6);
++      core.scale.setScalar(curScale);
++
++      // dönüş hızı — THINKING hızlanır
++      const rot = thinking ? 0.5 : alert ? 0.9 : listening ? 0.18 : 0.07;
++      core.rotation.y += dt * rot;
++      core.rotation.x = Math.sin(t * 0.12) * 0.12;
++
++      // partikül türbülansı — THINKING'te belirginleşir
++      const targetTurb = thinking ? 0.22 : alert ? 0.32 : listening ? 0.09 : 0.035;
++      curTurb += (targetTurb - curTurb) * Math.min(1, dt * 4);
++      const freq = thinking ? 3.4 : 1.4;
++      for (let i = 0; i < N; i++) {
++        const wob = 1 + Math.sin(t * freq + seeds[i]) * curTurb + amp * 0.12;
++        const r = RADIUS * wob;
++        arr[i * 3] = dirs[i * 3] * r;
++        arr[i * 3 + 1] = dirs[i * 3 + 1] * r;
++        arr[i * 3 + 2] = dirs[i * 3 + 2] * r;
++      }
++      posAttr.needsUpdate = true;
++
++      // partikül parlaklığı
++      pMat.opacity = 0.8 + (listening ? 0.15 : 0) + amp * 0.25 + (thinking ? 0.1 : 0);
++      pMat.size = 0.05 + amp * 0.02 + (listening ? 0.008 : 0);
++
++      // halkalar
++      const ringSpeed = thinking ? 1.6 : alert ? 2.6 : listening ? 0.9 : 0.35;
++      rings.forEach((r, i) => {
++        r.rotation.z += dt * ringSpeed * (i % 2 ? -1 : 1);
++        r.rotation.y += dt * ringSpeed * 0.3;
++      });
++      dotRing.rotation.z += dt * ringSpeed * 0.6;
++
++      // merkez ışıması nefes alır + sesle titreşir
++      glowMat.opacity = 0.4 + 0.12 * Math.sin(t * 1.6) + amp * 0.5 + (thinking ? 0.12 : 0);
++      glow.scale.setScalar(5.2 + Math.sin(t * 1.3) * 0.3 + amp * 1.2);
++
++      renderer.render(scene, camera);
++    };
++    raf = requestAnimationFrame(loop);
++
++    return () => {
++      cancelAnimationFrame(raf);
++      ro.disconnect();
++      disposables.forEach((d) => d.dispose());
++      renderer.dispose();
++      if (renderer.domElement.parentElement === mount) mount.removeChild(renderer.domElement);
++    };
++  }, []);
++
++  return (
++    <div className="sphere-stage">
++      <div ref={ref} className="sphere-canvas" />
++      {/* Merkez ULTRON üçgeni — kesin/keskin görüntü için SVG overlay */}
++      <div className="sphere-logo" aria-hidden>
++        <svg viewBox="0 0 120 108" width="132" height="120">
++          <defs>
++            <linearGradient id="ultri" x1="0" y1="0" x2="0" y2="1">
++              <stop offset="0" stopColor="#ff6a6a" />
++              <stop offset="0.55" stopColor="#ff1a1a" />
++              <stop offset="1" stopColor="#8a0000" />
++            </linearGradient>
++          </defs>
++          {/* ana üçgen */}
++          <path d="M60 6 L112 100 L8 100 Z" fill="url(#ultri)" opacity="0.95" />
++          {/* iç negatif kesim (Ultron delta) */}
++          <path d="M60 30 L92 92 L58 92 L74 62 Z" fill="#000000" opacity="0.92" />
++          <path d="M60 30 L28 92 L50 92 L60 54 Z" fill="#000000" opacity="0.55" />
++        </svg>
++      </div>
++    </div>
++  );
++}
++
++/** Yumuşak kenarlı yuvarlak partikül dokusu (kare piksel yerine parıltı). */
++function makeDiscTexture(): THREE.Texture {
++  const c = document.createElement("canvas");
++  c.width = c.height = 64;
++  const g = c.getContext("2d")!;
++  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
++  grad.addColorStop(0, "rgba(255,255,255,1)");
++  grad.addColorStop(0.35, "rgba(255,255,255,0.85)");
++  grad.addColorStop(1, "rgba(255,255,255,0)");
++  g.fillStyle = grad;
++  g.beginPath();
++  g.arc(32, 32, 32, 0, Math.PI * 2);
++  g.fill();
++  const tex = new THREE.CanvasTexture(c);
++  tex.needsUpdate = true;
++  return tex;
++}
++
++/** Merkez kızıl hale dokusu. */
++function makeGlowTexture(): THREE.Texture {
++  const c = document.createElement("canvas");
++  c.width = c.height = 128;
++  const g = c.getContext("2d")!;
++  const grad = g.createRadialGradient(64, 64, 0, 64, 64, 64);
++  grad.addColorStop(0, "rgba(255,255,255,0.9)");
++  grad.addColorStop(0.35, "rgba(255,40,60,0.5)");
++  grad.addColorStop(1, "rgba(255,40,60,0)");
++  g.fillStyle = grad;
++  g.fillRect(0, 0, 128, 128);
++  const tex = new THREE.CanvasTexture(c);
++  tex.needsUpdate = true;
++  return tex;
++}
+diff --git a/frontend/src/components/TerminalChat.tsx b/frontend/src/components/TerminalChat.tsx
+new file mode 100644
+index 0000000..8985066
+--- /dev/null
++++ b/frontend/src/components/TerminalChat.tsx
+@@ -0,0 +1,108 @@
++import { useEffect, useRef, useState } from "react";
++import { executeCommand } from "../lib/api";
++import { useApp } from "../lib/store";
++
++/**
++ * TerminalChat — sol panel: minimal terminal/sohbet geçmişi.
++ *
++ * Üstte ULTRON logosu + "YOUR PERSONAL AI ASSISTANT" başlığı, altında
++ * monospace kırmızı temalı konuşma geçmişi (store.chat), en altta canlı
++ * terminal cursor'ı ve komut girişi. Komutlar mevcut /api/agent/command
++ * akışına gider (executeCommand), backend mantığına dokunulmaz.
++ */
++export function TerminalChat() {
++  const chat = useApp((s) => s.chat);
++  const agentState = useApp((s) => s.agentState);
++  const connected = useApp((s) => s.connected);
++  const [text, setText] = useState("");
++  const [err, setErr] = useState<string | null>(null);
++  const scrollRef = useRef<HTMLDivElement>(null);
++
++  // yeni mesajda en alta kaydır
++  useEffect(() => {
++    const el = scrollRef.current;
++    if (el) el.scrollTop = el.scrollHeight;
++  }, [chat, agentState]);
++
++  const submit = async () => {
++    const t = text.trim();
++    if (!t) return;
++    setErr(null);
++    setText("");
++    try {
++      const r = await executeCommand(t);
++      if (!r.ok) setErr(r.error ?? "komut reddedildi");
++    } catch (e) {
++      setErr(e instanceof Error ? e.message : "backend'e ulaşılamadı");
++    }
++  };
++
++  const thinking = ["THINKING", "PLANNING", "EXECUTING", "VERIFYING"].includes(agentState);
++
++  return (
++    <aside className="term">
++      {/* --- marka --- */}
++      <header className="term-brand">
++        <svg className="term-logo" viewBox="0 0 120 108" width="30" height="27" aria-hidden>
++          <path d="M60 6 L112 100 L8 100 Z" fill="#ff1a1a" />
++          <path d="M60 30 L92 92 L58 92 L74 62 Z" fill="#000" />
++          <path d="M60 30 L28 92 L50 92 L60 54 Z" fill="#000" opacity="0.55" />
++        </svg>
++        <div className="term-brand-txt">
++          <div className="term-title">ULTRON</div>
++          <div className="term-sub">YOUR PERSONAL AI ASSISTANT</div>
++        </div>
++      </header>
++
++      {/* --- konuşma geçmişi --- */}
++      <div className="term-log" ref={scrollRef}>
++        {chat.length === 0 && (
++          <div className="term-empty">
++            <div>ULTRON: Sistem çevrimiçi. Emirlerinizi bekliyorum, Boss.</div>
++          </div>
++        )}
++        {chat.map((line, i) =>
++          line.role === "user" ? (
++            <div className="term-line" key={i}>
++              <span className="term-you">&gt; Sen:</span>{" "}
++              <span className="term-you-txt">{line.text}</span>
++            </div>
++          ) : (
++            <div className="term-line" key={i}>
++              <span className="term-ai">ULTRON:</span>{" "}
++              <span className="term-ai-txt">{line.text}</span>
++            </div>
++          )
++        )}
++        {thinking && (
++          <div className="term-line term-thinking">
++            <span className="term-ai">ULTRON:</span>{" "}
++            <span className="term-ai-txt">işleniyor<span className="term-dots" /></span>
++          </div>
++        )}
++      </div>
++
++      {/* --- komut satırı / cursor --- */}
++      <div className="term-prompt">
++        <span className="term-caret">&gt;</span>
++        <input
++          className="term-input"
++          placeholder=""
++          value={text}
++          onChange={(e) => setText(e.target.value)}
++          onKeyDown={(e) => {
++            if (e.key === "Enter") void submit();
++          }}
++          spellCheck={false}
++          autoComplete="off"
++        />
++        {text.length === 0 && <span className="term-blink" />}
++      </div>
++      {err && <div className="term-err">⚠ {err}</div>}
++      <div className="term-status">
++        <span className={"term-dot " + (connected ? "on" : "off")} />
++        {connected ? "LINK ACTIVE" : "RECONNECTING…"}
++      </div>
++    </aside>
++  );
++}
+diff --git a/frontend/src/index.css b/frontend/src/index.css
+index c447d32..a98d5b4 100644
+--- a/frontend/src/index.css
++++ b/frontend/src/index.css
+@@ -1,12 +1,15 @@
+ @import "tailwindcss";
+ 
+ :root {
+-  --red: #ff2438;
+-  --red-dim: rgba(255, 36, 56, 0.55);
++  --red: #ff1a1a;
++  --red-2: #ff3b3b;
++  --red-dim: rgba(255, 26, 26, 0.55);
++  --neon: rgba(255, 26, 26, 0.6);
++  --white: #f2f2f2;
+   --cyan: #38e1ff;
+   --green: #3ddc97;
+   --amber: #ffb454;
+-  --bg: #050508;
++  --bg: #000000;
+   --panel: rgba(11, 15, 22, 0.72);
+   --panel-edge: rgba(160, 180, 205, 0.12);
+   --text: #d7dde6;
+@@ -28,23 +31,14 @@ body {
+   -webkit-font-smoothing: antialiased;
+ }
+ 
+-/* ambient background: obsidian void (V12.3 purge) */
++/* ambient background: pure black void with a faint core glow to the right */
+ body::before {
+   content: "";
+   position: fixed;
+   inset: 0;
+   pointer-events: none;
+   z-index: 0;
+-  background: radial-gradient(900px 520px at 50% 42%, rgba(255, 36, 56, 0.05), transparent 65%);
+-}
+-body::after {
+-  content: "";
+-  position: fixed;
+-  inset: 0;
+-  pointer-events: none;
+-  z-index: 60;
+-  background: repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.016) 0 1px, transparent 1px 3px);
+-  mix-blend-mode: overlay;
++  background: radial-gradient(760px 620px at 68% 50%, rgba(255, 26, 26, 0.06), transparent 62%);
+ }
+ 
+ .app { position: relative; z-index: 1; height: 100vh; display: flex; flex-direction: column; }
+@@ -353,3 +347,136 @@ body::after {
+ /* fixed-height command center in the middle column */
+ .cmd-panel { flex: none; height: 240px; }
+ @media (max-height: 800px) { .cmd-panel { height: 216px; } }
++
++
++
++/* =====================================================================
++   ULTRON VOID CORE UI  (partikül küresi + terminal + PTT)
++   ===================================================================== */
++.ultron-root {
++  position: fixed;
++  inset: 0;
++  z-index: 1;
++  display: grid;
++  grid-template-columns: 35% 65%;
++  background: #000000;
++  overflow: hidden;
++}
++@media (max-width: 900px) {
++  .ultron-root { grid-template-columns: 44% 56%; }
++}
++
++/* ---------------- sol: terminal / sohbet ---------------- */
++.term {
++  position: relative;
++  display: flex;
++  flex-direction: column;
++  min-height: 0;
++  padding: 26px 22px 18px;
++  gap: 16px;
++  z-index: 2;
++}
++.term-brand { display: flex; align-items: center; gap: 12px; }
++.term-logo { filter: drop-shadow(0 0 8px var(--neon)); flex: none; }
++.term-brand-txt { display: flex; flex-direction: column; }
++.term-title {
++  font-family: var(--font-ui);
++  font-size: 26px; font-weight: 700; letter-spacing: 0.34em;
++  color: var(--white); line-height: 1;
++  text-shadow: 0 0 18px rgba(255, 26, 26, 0.35);
++}
++.term-sub {
++  font-family: var(--font-mono);
++  font-size: 8.5px; letter-spacing: 0.44em; color: rgba(210, 210, 214, 0.55);
++  margin-top: 5px;
++}
++
++.term-log {
++  flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden;
++  display: flex; flex-direction: column; gap: 12px;
++  font-family: var(--font-mono);
++  font-size: 12.5px; line-height: 1.55;
++  padding-right: 6px;
++}
++.term-empty { color: var(--red); opacity: 0.8; }
++.term-line { animation: termin 0.22s ease; word-break: break-word; }
++@keyframes termin { from { opacity: 0; transform: translateX(-4px); } }
++.term-you { color: var(--red); font-weight: 700; }
++.term-you-txt { color: #cfd3d8; }
++.term-ai { color: var(--red); font-weight: 700; text-shadow: 0 0 10px var(--neon); }
++.term-ai-txt { color: var(--red-2); }
++.term-thinking .term-ai-txt { color: rgba(255, 59, 59, 0.7); }
++.term-dots::after { content: ""; animation: dots 1.2s steps(4, end) infinite; }
++@keyframes dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
++
++.term-prompt { display: flex; align-items: center; gap: 8px; }
++.term-caret { color: var(--red); font-family: var(--font-mono); font-size: 14px; font-weight: 700; }
++.term-input {
++  flex: 1; background: transparent; border: none; outline: none;
++  color: #d8dbe0; font-family: var(--font-mono); font-size: 13px;
++  letter-spacing: 0.04em; caret-color: var(--red);
++}
++.term-input::placeholder { color: rgba(120, 120, 128, 0.4); }
++.term-blink {
++  width: 8px; height: 15px; background: var(--red);
++  box-shadow: 0 0 8px var(--neon);
++  animation: blink 1.05s steps(2, start) infinite; margin-left: -4px;
++}
++@keyframes blink { 50% { opacity: 0; } }
++.term-err { font-family: var(--font-mono); font-size: 10px; color: var(--red); }
++.term-status {
++  display: flex; align-items: center; gap: 7px;
++  font-family: var(--font-mono); font-size: 8.5px; letter-spacing: 0.22em;
++  color: rgba(180, 185, 195, 0.4);
++}
++.term-dot { width: 6px; height: 6px; border-radius: 50%; }
++.term-dot.on { background: var(--green); box-shadow: 0 0 7px var(--green); }
++.term-dot.off { background: var(--amber); box-shadow: 0 0 7px var(--amber); animation: pulse 1s infinite; }
++
++/* ---------------- merkez/sağ: partikül küresi ---------------- */
++.stage-wrap { position: relative; min-height: 0; overflow: hidden; }
++.sphere-stage { position: absolute; inset: 0; }
++.sphere-canvas { position: absolute; inset: 0; }
++.sphere-logo {
++  position: absolute; top: 50%; left: 50%;
++  transform: translate(-50%, -50%);
++  pointer-events: none;
++  filter: drop-shadow(0 0 18px rgba(255, 26, 26, 0.85)) drop-shadow(0 0 42px rgba(255, 26, 26, 0.5));
++}
++
++/* ---------------- alt: Push-To-Talk barı ---------------- */
++.ptt-bar {
++  position: absolute; left: 50%; bottom: 26px; transform: translateX(-50%);
++  display: flex; align-items: center; gap: 14px; z-index: 6;
++  padding: 8px 18px 8px 10px;
++  background: rgba(8, 8, 10, 0.55);
++  border: 1px solid rgba(255, 26, 26, 0.25);
++  border-radius: 999px;
++  backdrop-filter: blur(6px);
++}
++.ptt-btn {
++  width: 44px; height: 44px; border-radius: 50%; flex: none;
++  display: inline-flex; align-items: center; justify-content: center;
++  background: radial-gradient(circle at 35% 30%, rgba(255, 70, 70, 0.5), rgba(120, 8, 8, 0.7));
++  border: 1px solid rgba(255, 26, 26, 0.7); color: #ffe4e4; cursor: pointer;
++  box-shadow: 0 0 18px rgba(255, 26, 26, 0.4);
++  transition: box-shadow 0.2s ease, transform 0.12s ease;
++  touch-action: none;
++}
++.ptt-btn:hover { box-shadow: 0 0 26px rgba(255, 26, 26, 0.6); }
++.ptt-btn:active { transform: scale(0.94); }
++.ptt-btn.live { animation: pttpulse 1.1s ease-in-out infinite; }
++@keyframes pttpulse { 50% { box-shadow: 0 0 34px rgba(255, 26, 26, 0.9); } }
++.ptt-meta { display: flex; flex-direction: column; line-height: 1.2; }
++.ptt-label {
++  font-family: var(--font-mono); font-size: 8px; letter-spacing: 0.3em;
++  color: rgba(200, 200, 205, 0.45);
++}
++.ptt-phase {
++  font-family: var(--font-mono); font-size: 12px; font-weight: 700; letter-spacing: 0.22em;
++  margin-top: 2px;
++}
++.ptt-phase.p-idle { color: rgba(200, 200, 205, 0.6); }
++.ptt-phase.p-listening { color: var(--red); text-shadow: 0 0 10px var(--neon); animation: pulse 1s infinite; }
++.ptt-phase.p-thinking { color: var(--red-2); text-shadow: 0 0 10px var(--neon); }
++.ptt-phase.p-speaking { color: #ff6a6a; text-shadow: 0 0 12px var(--neon); }
+diff --git a/frontend/src/lib/api.ts b/frontend/src/lib/api.ts
+index d9be23c..d800203 100644
+--- a/frontend/src/lib/api.ts
++++ b/frontend/src/lib/api.ts
+@@ -1,4 +1,4 @@
+-import { getState, setState } from "./store";
++import { getState, pushChat, setState } from "./store";
+ import { cancelSpeech, speak } from "./tts";
+ import type { MemoryRow, PatchProposal, TestEvent } from "./types";
+ import type {
+@@ -53,8 +53,11 @@ export const getRecentActivity = () => req<ActivityItem[]>("/api/activity");
+ export const getNotifications = () => req<NotificationItem[]>("/api/notifications");
+ export const getConfig = () => req<Config>("/api/config");
+ 
+-export const executeCommand = (text: string, approved = false) =>
+-  post("/api/agent/command", { text, approved });
++export const executeCommand = (text: string, approved = false) => {
++  // Echo the operator's typed command into the terminal console (left panel).
++  pushChat("user", text);
++  return post("/api/agent/command", { text, approved });
++};
+ export const getAudit = () => req<string[]>("/api/audit");
+ 
+ // ---- code intelligence / codegen / tests ----
+@@ -88,9 +91,18 @@ export const memoryV16Delete = (id: number) => post("/api/memory/v16/delete", {
+ export const memoryV16Clear = () => post("/api/memory/v16/clear");
+ export const memoryV16Search = (q: string) =>
+   req<{ score: number; kind: string; content: string }[]>(`/api/memory/v16/search?q=${encodeURIComponent(q)}`);
+-export const sendVoiceCommand = (text: string) => post("/api/agent/command", { text });
+-export const pushToTalk = (seconds = 6.0) =>
+-  post("/api/voice/ptt", { seconds }, 120000);
++export const sendVoiceCommand = (text: string) => {
++  // Web-Speech transcript path → echo the spoken command into the console.
++  pushChat("user", text);
++  return post("/api/agent/command", { text });
++};
++export const pushToTalk = async (seconds = 6.0) => {
++  // Local push-to-talk turn (Whisper STT). The backend returns the recognized
++  // transcript in `text`; echo it into the terminal console as the operator line.
++  const r = await post("/api/voice/ptt", { seconds }, 120000) as { ok: boolean; error?: string; text?: string };
++  if (r.ok && typeof r.text === "string") pushChat("user", r.text);
++  return r;
++};
+ export const captureScreen = () => post("/api/actions/screenshot");
+ export const openBrowser = () => post("/api/actions/browser");
+ export const systemCheck = () => post("/api/actions/system-check");
+@@ -145,7 +157,11 @@ function handle(msg: WireMessage): void {
+     case "agent": {
+       const ev = { ts: msg.ts as number, state: msg.state as AgentState, message: msg.message as string | undefined };
+       setState({ agentState: ev.state, agentEvents: [...s.agentEvents, ev].slice(-60) });
+-      if ((ev.state === "DONE" || ev.state === "ERROR") && ev.message) void speak(ev.message);
++      if ((ev.state === "DONE" || ev.state === "ERROR") && ev.message) {
++        // Final agent reply → speak it and echo it into the terminal console.
++        pushChat("ultron", ev.message);
++        void speak(ev.message);
++      }
+       break;
+     }
+     case "patch": {
+@@ -166,9 +182,12 @@ function handle(msg: WireMessage): void {
+     case "barge_in":
+       cancelSpeech();
+       break;
+-    case "proactive_speech":
+-      speak(String(msg.text ?? ""));
++    case "proactive_speech": {
++      const t = String(msg.text ?? "");
++      pushChat("ultron", t);
++      speak(t);
+       break;
++    }
+     default:
+       break;
+   }
+diff --git a/frontend/src/lib/store.ts b/frontend/src/lib/store.ts
+index 0554fa9..b7471bf 100644
+--- a/frontend/src/lib/store.ts
++++ b/frontend/src/lib/store.ts
+@@ -15,6 +15,13 @@ import type {
+ export type MicState = "idle" | "armed" | "listening" | "unavailable" | "error";
+ export type TtsMode = "neural" | "off";
+ 
++/** A single terminal/chat line rendered in the left console panel. */
++export interface ChatLine {
++  role: "user" | "ultron";
++  text: string;
++  ts: number;
++}
++
+ export interface AppState {
+   connected: boolean;
+   system: SystemSnapshot | null;
+@@ -25,6 +32,7 @@ export interface AppState {
+   notifications: NotificationItem[];
+   agentState: AgentState;
+   agentEvents: AgentEvent[];
++  chat: ChatLine[];
+   coreFps: number;
+   mic: MicState;
+   ttsEnabled: boolean;
+@@ -55,6 +63,7 @@ let state: AppState = {
+   notifications: [],
+   agentState: "IDLE",
+   agentEvents: [],
++  chat: [],
+   coreFps: 0,
+   mic: "idle",
+   ttsEnabled: true,
+@@ -99,3 +108,16 @@ export function useApp<T>(selector: (s: AppState) => T): T {
+ 
+ /** Live microphone amplitude (0..1), written by the voice hook, read by the waveform canvas. */
+ export const audioLevel = { current: 0 };
++
++/**
++ * Append a line to the terminal/chat console (left panel).
++ * De-dupes identical consecutive lines so a spoken command that is also
++ * echoed back over the activity stream is not shown twice.
++ */
++export function pushChat(role: ChatLine["role"], text: string): void {
++  const clean = (text ?? "").trim();
++  if (!clean) return;
++  const prev = state.chat[state.chat.length - 1];
++  if (prev && prev.role === role && prev.text === clean) return;
++  setState({ chat: [...state.chat, { role, text: clean, ts: Date.now() / 1000 }].slice(-120) });
++}
+diff --git a/frontend/src/styles/themes.ts b/frontend/src/styles/themes.ts
+index 3d861a5..41bd8f2 100644
+--- a/frontend/src/styles/themes.ts
++++ b/frontend/src/styles/themes.ts
+@@ -2,7 +2,7 @@
+ export type ThemeName = "CRIMSON" | "CYAN" | "PURPLE" | "HYBRID";
+ 
+ export const THEMES: Record<Exclude<ThemeName, "HYBRID">, { red: string; cyan: string }> = {
+-  CRIMSON: { red: "#ff1e42", cyan: "#38e1ff" },   // Ultron klasik: titanyum + neon kızıl
++  CRIMSON: { red: "#ff1a1a", cyan: "#38e1ff" },   // Ultron klasik: titanyum + neon kızıl
+   CYAN: { red: "#00f0ff", cyan: "#4d7cff" },      // Stark Jarvis: lacivert + elektrik cyan
+   PURPLE: { red: "#bc13fe", cyan: "#7a5cff" },    // Void cyberpunk: obsidyen + plazma moru
+ };
+-- 
+2.39.5
+

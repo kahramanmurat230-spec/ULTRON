@@ -1,0 +1,71 @@
+*** Begin Patch
+*** Update File: frontend/src/components/ParticleSphere.tsx
+@@
+-    const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+-    camera.position.set(0, 0, 11);
++    const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
++    camera.position.set(0, 0, 10.5);
+@@
+-    const RADIUS = 4;
++    // Keep the core visually spherical and compact; the reference is minimal.
++    const RADIUS = 3.55;
+@@
+-    // ------------------------------------------------------------------
+-    // 2) Orbital / holografik halkalar (3 adet, hafif şeffaf)
+-    // ------------------------------------------------------------------
+-    const rings: THREE.Mesh[] = [];
+-    const ringMats: THREE.MeshBasicMaterial[] = [];
+-    const ringDefs = [
+-      { r: 4.7, tilt: Math.PI / 2.1, op: 0.5 },
+-      { r: 5.5, tilt: Math.PI / 3.2, op: 0.34 },
+-      { r: 6.4, tilt: Math.PI / 1.7, op: 0.22 },
+-    ];
+-    ringDefs.forEach((d) => {
+-      const m = T(new THREE.MeshBasicMaterial({ color: RED, transparent: true, opacity: d.op, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+-      ringMats.push(m);
+-      const ring = new THREE.Mesh(T(new THREE.TorusGeometry(d.r, 0.012, 8, 160)), m);
+-      ring.rotation.x = d.tilt;
+-      rings.push(ring);
+-      scene.add(ring);
+-    });
+-
+-    // kesikli iç halka (referanstaki noktalı çember hissi)
++    // ------------------------------------------------------------------
++    // 2) Tek, düz ve çok hafif noktalı halo.
++    //    Büyük eğik torus'lar yok: merkez çekirdeği temiz tutuyoruz.
++    // ------------------------------------------------------------------
+     const dotRingGeo = T(new THREE.BufferGeometry());
+-    const DR = 320;
++    const DR = 220;
+     const dpos = new Float32Array(DR * 3);
+     for (let i = 0; i < DR; i++) {
+       const a = (i / DR) * Math.PI * 2;
+-      dpos[i * 3] = Math.cos(a) * 4.25;
+-      dpos[i * 3 + 1] = Math.sin(a) * 4.25;
++      const rr = RADIUS * 1.10;
++      dpos[i * 3] = Math.cos(a) * rr;
++      dpos[i * 3 + 1] = Math.sin(a) * rr;
+       dpos[i * 3 + 2] = 0;
+     }
+     dotRingGeo.setAttribute("position", new THREE.BufferAttribute(dpos, 3));
+-    const dotMat = T(new THREE.PointsMaterial({ color: RED2, size: 0.04, transparent: true, opacity: 0.6, blending: THREE.AdditiveBlending, depthWrite: false }));
++    const dotMat = T(new THREE.PointsMaterial({ color: RED2, size: 0.028, transparent: true, opacity: 0.34, blending: THREE.AdditiveBlending, depthWrite: false }));
+     const dotRing = new THREE.Points(dotRingGeo, dotMat);
+-    dotRing.rotation.x = Math.PI / 2.3;
+     scene.add(dotRing);
+@@
+-      ringMats.forEach((m) => m.color.copy(RED));
+       glowMat.color.copy(RED);
+       dotMat.color.copy(RED2);
+@@
+-      // halkalar
+-      const ringSpeed = thinking ? 1.6 : alert ? 2.6 : listening ? 0.9 : 0.35;
+-      rings.forEach((r, i) => {
+-        r.rotation.z += dt * ringSpeed * (i % 2 ? -1 : 1);
+-        r.rotation.y += dt * ringSpeed * 0.3;
+-      });
+-      dotRing.rotation.z += dt * ringSpeed * 0.6;
++      // Tek noktalı halo: çok hafifçe döner, çekirdeğin önüne geçmez.
++      const ringSpeed = thinking ? 0.55 : listening ? 0.24 : 0.10;
++      dotRing.rotation.z += dt * ringSpeed;
+*** End Patch

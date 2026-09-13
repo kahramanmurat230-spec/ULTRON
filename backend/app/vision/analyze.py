@@ -1,15 +1,7 @@
 """Vision foundation — dependency-light, REAL image analysis (no LLM needed).
 
 Everything here runs on Pillow + numpy and fails honestly when a required
-binary (tesseract) is missing:
-
-- analyze_image(): geometry, brightness/contrast, dominant colors, edge
-  density, dark-mode likelihood — works on ANY image, headless included.
-- diff_images(): pixel-level change ratio + changed-region count between
-  two frames -> screen-change / motion detection for proactive layer.
-- ocr_elements(): pytesseract image_to_data -> text elements with boxes
-  and confidence, the bridge from "what's on screen" to clickable
-  targets for GUI automation.
+binary (tesseract) is missing.
 """
 from pathlib import Path
 
@@ -36,24 +28,24 @@ def analyze_image(path: str) -> dict:
     arr = np.asarray(img)
     gray = arr.mean(axis=2)
     h, w = gray.shape
-    # brightness / contrast
     brightness = float(gray.mean())
     contrast = float(gray.std())
-    # dark-mode likelihood: both low absolute brightness and low channel spread
     is_dark = brightness < 90.0
-    # edge density (simple gradient magnitude on a downsampled grid)
-    small = gray[:: max(1, h // 200) or 1, :: max(1, w // 200) or 1]
+    small = gray[:: max(1, h // 200), :: max(1, w // 200)]
     gx = np.abs(np.diff(small, axis=1)).mean() if small.shape[1] > 1 else 0.0
     gy = np.abs(np.diff(small, axis=0)).mean() if small.shape[0] > 1 else 0.0
     edge_density = float(gx + gy)
-    # dominant colors via 4-bit quantization
     q = (arr // 16).reshape(-1, 3)
     colors, counts = np.unique(q, axis=0, return_counts=True)
     order = np.argsort(-counts)[:5]
     total = q.shape[0]
-    dominant = [{"rgb_approx": [int(c[0]) * 16 + 8, int(c[1]) * 16 + 8, int(c[2]) * 16 + 8],
-                 "share": round(float(counts[i]) / total, 3)}
-                for i, c in zip(order, colors)]
+    dominant = [
+        {
+            "rgb_approx": [int(colors[i][0]) * 16 + 8, int(colors[i][1]) * 16 + 8, int(colors[i][2]) * 16 + 8],
+            "share": round(float(counts[i]) / total, 3),
+        }
+        for i in order
+    ]
     return {
         "path": str(path), "width": w, "height": h,
         "brightness": round(brightness, 1), "contrast": round(contrast, 1),
@@ -77,7 +69,6 @@ def diff_images(path_a: str, path_b: str, pixel_threshold: float = 12.0,
     delta = np.abs(ga - gb)
     changed = delta > pixel_threshold
     ratio = float(changed.mean())
-    # region map (coarse where-changed)
     h, w = changed.shape
     rs = max(1, h // region_grid)
     cs = max(1, w // region_grid)
@@ -130,12 +121,8 @@ def ocr_elements(path: str, min_conf: int = 40) -> list[dict]:
     return out
 
 
-# ------------------------------------------------------------ PHASE 7 additions
 def screenshot_fresh(path: str, max_age_s: float = 20.0, now=None) -> dict:
-    """Stale-screenshot protection: an action must not be based on an old frame.
-
-    Verifies the file exists AND its mtime is within max_age_s. Returns
-    {fresh, age_s, path}; never raises for staleness — the caller decides."""
+    """Verify a screenshot exists and is recent enough for an action."""
     import time as _t
     p = Path(path)
     now = _t.time() if now is None else now
@@ -148,10 +135,7 @@ def screenshot_fresh(path: str, max_age_s: float = 20.0, now=None) -> dict:
 
 
 def verify_visual_change(before: str, after: str, min_change: float = 0.002) -> dict:
-    """Action verification for GUI/computer-use: did the screen actually change?
-
-    Wraps diff_images with an honest verdict; identical screens after an
-    action mean the action likely did nothing (or hit the wrong target)."""
+    """Report whether a GUI action produced a measurable visual change."""
     res = diff_images(before, after)
     changed = res["changed_ratio"] >= min_change
     return {"action_effective": changed,
