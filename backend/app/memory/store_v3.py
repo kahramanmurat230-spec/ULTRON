@@ -18,6 +18,7 @@ import time
 import uuid
 from pathlib import Path
 
+from app.core.sqlite_guard import ensure_writable_sqlite_path
 from app.memory.layers import (
     MEMORY_TYPES, PRIVACY_LEVELS, RECORD_STATUS, SOURCE_CONFIDENCE,
     clamp_confidence, validate_kind, validate_memory_type,
@@ -54,6 +55,10 @@ class MemoryStore:
     # ------------------------------------------------------------ db core
     def _conn(self) -> sqlite3.Connection:
         if self._db is None:
+            # Fail fast with PermissionError on a read-only DB/directory:
+            # WAL + IF NOT EXISTS/INSERT OR IGNORE init can otherwise make a
+            # read-only database look writable until the first real write.
+            ensure_writable_sqlite_path(self.path)
             self._db = sqlite3.connect(self.path, check_same_thread=False)
             self._db.execute("PRAGMA journal_mode=WAL")
             self._db.execute("PRAGMA synchronous=NORMAL")

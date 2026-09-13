@@ -18,6 +18,7 @@ Secretler: payload'daki her string persist edilmeden ÖNCE maskelenir.
 """
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import json
 import sqlite3
@@ -26,6 +27,7 @@ import time
 import uuid
 from pathlib import Path
 
+from app.core.sqlite_guard import ensure_writable_sqlite_path
 from app.events.schema import (
     MAX_PAYLOAD_BYTES, classify_event, new_event_id, validate_event,
 )
@@ -72,6 +74,10 @@ class DurableEventBus:
 
     def _conn(self):
         if self._db is None:
+            # Fail fast with PermissionError on a read-only DB/directory:
+            # WAL + CREATE TABLE IF NOT EXISTS init can otherwise open a
+            # read-only database silently and fail only on first publish.
+            ensure_writable_sqlite_path(self.path)
             self._db = sqlite3.connect(self.path, check_same_thread=False)
             self._db.execute("PRAGMA journal_mode=WAL")
             self._db.execute("PRAGMA busy_timeout=5000")
@@ -234,10 +240,10 @@ class DurableEventBus:
                     if hasattr(out, "__await__"):
                         # async abone: zamanlayıcıya bırak (sunucu döngüsünde)
                         try:
-                            loop = __import__("asyncio").get_event_loop()
+                            loop = asyncio.get_running_loop()
                             loop.create_task(out)
                         except RuntimeError:
-                            __import__("asyncio").run(out)
+                            asyncio.run(out)
                     error = None
                     break
                 except Exception as exc:  # noqa: BLE001

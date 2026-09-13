@@ -200,7 +200,7 @@ class AgentMessageBus:
     async def wait_for(self, receiver: str, timeout: float = 30.0) -> dict | None:
         """Async bekleme: WAITING worker'lar için (scheduler ctx'e bağlanır)."""
         import asyncio
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         fut = loop.create_future()
 
         def _wake():

@@ -108,7 +108,7 @@ class EventBus:
                 out = cb(topic, payload or {})
                 if asyncio.iscoroutine(out):
                     try:
-                        asyncio.get_event_loop().create_task(out)
+                        asyncio.get_running_loop().create_task(out)
                     except RuntimeError:
                         asyncio.run(out)
             except Exception:

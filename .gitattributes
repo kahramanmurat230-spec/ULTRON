@@ -1,0 +1,5 @@
+# Windows batch scripts must always be checked out with CRLF line endings:
+# cmd.exe label scanning (goto/:label) and multi-line blocks are unreliable
+# with LF-only files on some Windows builds.
+*.bat text eol=crlf
+*.cmd text eol=crlf

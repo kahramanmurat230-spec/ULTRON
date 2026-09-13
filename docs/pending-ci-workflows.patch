@@ -1,0 +1,52 @@
+diff --git a/.github/workflows/backend-tests.yml b/.github/workflows/backend-tests.yml
+index dfa7cbd..febc016 100644
+--- a/.github/workflows/backend-tests.yml
++++ b/.github/workflows/backend-tests.yml
+@@ -64,3 +64,28 @@ jobs:
+         run: npm ci
+       - name: Build mobile frontend
+         run: npm run build
++
++  # Windows + Python 3.13 target-environment validation (ULTRON ships to
++  # Windows 11 / Python 3.13). Uses the deterministic core dependency set;
++  # optional hardware deps (playwright, opencv, faster-whisper, ...) must
++  # degrade honestly — the suite asserts that behavior.
++  backend-tests-windows-py313:
++    runs-on: windows-latest
++    defaults:
++      run:
++        working-directory: backend
++    steps:
++      - name: Checkout
++        uses: actions/checkout@v5
++      - name: Setup Python
++        uses: actions/setup-python@v6
++        with:
++          python-version: '3.13'
++      - name: Install core dependencies
++        run: |
++          python -m pip install --upgrade pip
++          pip install aiohttp psutil pytest cryptography pillow numpy pytesseract pypdf pvporcupine
++      - name: Compile backend
++        run: python -m compileall -q app
++      - name: Run backend tests on Python 3.13 (Windows)
++        run: python -m pytest -q
+diff --git a/.github/workflows/windows-smoke.yml b/.github/workflows/windows-smoke.yml
+index fcde2d1..1348d1d 100644
+--- a/.github/workflows/windows-smoke.yml
++++ b/.github/workflows/windows-smoke.yml
+@@ -44,10 +44,13 @@ jobs:
+ 
+       - name: Start backend
+         shell: pwsh
++        # Start from backend/ exactly like scripts/start_ultron.bat does:
++        # UltronRuntime resolves data/ paths against the process cwd.
++        working-directory: backend
+         run: |
+           $env:ULTRON_AUTH = "0"
+           $env:ULTRON_PERSISTENT_MEMORY = "0"
+-          $p = Start-Process -FilePath python -ArgumentList "-B", "backend/server.py" -PassThru -WindowStyle Hidden
++          $p = Start-Process -FilePath python -ArgumentList "-B", "server.py" -WorkingDirectory (Get-Location).Path -PassThru -WindowStyle Hidden
+           "BACKEND_PID=$($p.Id)" | Out-File -FilePath $env:GITHUB_ENV -Append
+           $ready = $false
+           for ($i = 0; $i -lt 60; $i++) {

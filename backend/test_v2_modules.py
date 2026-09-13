@@ -469,7 +469,11 @@ import socket
 from app.core import doctor as doc
 from app.core.backup_engine import BackupEngine
 
-d8 = doc.run_doctor({"db_paths": [], "rules_path": os.path.join(tmp, "rules2.json")})
+# Deterministic offline probe: point the doctor at a dead port so machines
+# WITH a running Ollama (e.g. the production Windows box) don't flip this
+# "graceful degradation" check into a false FAIL.
+d8 = doc.run_doctor({"ollama_host": "http://127.0.0.1:9", "db_paths": [],
+                     "rules_path": os.path.join(tmp, "rules2.json")})
 check("p8 doctor sections", all(k in d8["sections"] for k in
       ("deps", "ollama", "databases", "master_rules", "hardware", "ports"))
       and d8["overall"] in ("PASS", "WARN", "FAIL"))

@@ -56,6 +56,10 @@ def parse_step(clause: str) -> dict | None:
         m = re.search(r"^(.+?)\s+(?:klasörü|klasoru|klasörünü|klasorunu)\s+(?:oluştur|olustur|aç|ac)$", c)
     if m:
         return {"label": f"klasör oluştur: {m.group(1).strip()}", "tool": "create_folder", "args": {"path": _known_path(m.group(1).strip())}, "verify": "exists"}
+    # read-only directory listing (runtime tool: list_directory, sandboxed)
+    m = re.search(r"^(.+?)\s+(?:klasörünü|klasorunu|klasöründekileri|klasorundekileri|dizinini|içeriğini|icerigini)\s+(?:listele|göster|goster)$", c)
+    if m:
+        return {"label": f"klasör listele: {m.group(1).strip()}", "tool": "list_directory", "args": {"root": _known_path(m.group(1).strip())}, "verify": None}
     m = re.search(r"(.+?)\s+(?:dosyasını|dosyayi|dosyayı)\s+(.+?)\s+(?:klasörüne|klasorune|dizinine)\s+kopyala$", c)
     if m:
         src, folder = m.group(1).strip(), m.group(2).strip()

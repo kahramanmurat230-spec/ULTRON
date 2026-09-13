@@ -122,7 +122,7 @@ class ToolRegistry:
         else:
             await self._set(name, "ERROR", result.get("error", "failed"))
             await self.on_activity(f"{t['label']} failed: {result.get('error')}", "error")
-        asyncio.get_event_loop().call_later(4, lambda: asyncio.ensure_future(self._settle(name)))
+        asyncio.get_running_loop().call_later(4, lambda: asyncio.ensure_future(self._settle(name)))
         return result
 
     async def _settle(self, name: str) -> None:

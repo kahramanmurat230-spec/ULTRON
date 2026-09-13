@@ -579,8 +579,10 @@ class TaskEngine:
 
     def spawn(self, task_id: str, step_runner) -> bool:
         if task_id in self._running: return False
-        loop = asyncio.get_event_loop()
-        if not loop.is_running(): return False
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return False
         async def _wrap():
             try: await self.execute(task_id, step_runner)
             finally: self._running.pop(task_id, None)

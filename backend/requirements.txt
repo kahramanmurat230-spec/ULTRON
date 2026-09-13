@@ -18,3 +18,7 @@ pvporcupine>=3.0          # gerçek wake-word engine (jarvis/computer; AccessKey
 openwakeword>=0.6         # açık wake-word alternatifi (modeller: data/voice/wake/*.tflite)
 pypdf>=5.0                # real PDF metadata/text extraction
 opencv-python>=4.10       # real camera capture on supported Windows backends
+
+# --- Windows-only feature providers (environment markers keep Linux/CI unaffected) ---
+pywin32>=306; sys_platform == 'win32'   # Outlook takvim connector + workspace sentinel pencere taraması
+comtypes>=1.2; sys_platform == 'win32'  # UIA grounding (multimodal)

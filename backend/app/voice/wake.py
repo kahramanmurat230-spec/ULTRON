@@ -75,11 +75,22 @@ class PorcupineEngine:
         return bool(self.access_key and self.keyword_path)
 
     def status(self) -> dict:
+        if self.available:
+            err = None
+        elif not self.access_key:
+            # Doğru hata önceliği: eksik AccessKey, ikincil sorunların
+            # (pvporcupine kurulu değil / keyword dosyası yok) arkasına
+            # gizlenmez — kullanıcı önce anahtarı edinmeli. İkincil sorun
+            # varsa dürüstçe ek bilgi olarak korunur.
+            err = "PICOVOICE_ACCESS_KEY yok (ücretsiz: console.picovoice.ai)"
+            if self.error:
+                err += f"; ayrıca: {self.error}"
+        else:
+            err = self.error or "porcupine kullanılamıyor (bilinmeyen neden)"
         return {"engine": self.NAME, "available": self.available,
                 "keyword": self.keyword,
                 "frame_samples": PORCUPINE_FRAME,
-                "error": None if self.available else (
-                    self.error or "PICOVOICE_ACCESS_KEY yok (ücretsiz: console.picovoice.ai)")}
+                "error": err}
 
     def start(self):
         if not self.available:

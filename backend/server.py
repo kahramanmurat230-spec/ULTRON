@@ -48,6 +48,13 @@ import test_runner
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE, "data")
+# V16 relative data paths (data/memory, data/dna, data/logs, data/vault)
+# resolve against backend/. Hub() is constructed at import time, so the
+# chdir must happen HERE — before any component opens a relative DB —
+# otherwise starting the server from another cwd (e.g. `python
+# backend\server.py` at the repo root) splits the data tree across two
+# locations. main() repeats the chdir defensively; it is idempotent.
+os.chdir(BASE)
 WORKSPACE = os.environ.get("ULTRON_WORKSPACE", os.path.dirname(BASE))
 OLLAMA_HOST = os.environ.get("ULTRON_OLLAMA_HOST", "http://127.0.0.1:11434")
 PERSISTENT = os.environ.get("ULTRON_PERSISTENT_MEMORY", "1") != "0"
@@ -116,9 +123,8 @@ class Hub:
             "steps": [{"label": r, "tool": "terminal", "dangerous": True} for r in risks],
         }
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                loop.create_task(self._approval_requested(tid, risks))
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._approval_requested(tid, risks))
         except RuntimeError:
             pass
         return tid
@@ -655,6 +661,37 @@ async def api_config_reload(_req: web.Request) -> web.Response:
         hub.health["persona_guard"]["mode"] = st.get("persona_guard_mode", "reframe")
     await hub.on_activity("Config hot-reload applied", "info")
     return web.json_response({"ok": True, "persona_guard_mode": st.get("persona_guard_mode", "reframe")})
+
+
+async def api_voice_ptt(req: web.Request) -> web.Response:
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    try:
+        seconds = max(1.0, min(float(body.get("seconds", 6.0)), 15.0))
+    except (TypeError, ValueError):
+        seconds = 6.0
+    if not (hub.bridge and hub.bridge.available):
+        return web.json_response({"ok": False, "error": "V16 runtime unavailable"}, status=503)
+    import importlib.util as _iu
+    if not (_iu.find_spec("sounddevice") and _iu.find_spec("faster_whisper")):
+        return web.json_response({"ok": False, "error": "sounddevice + faster-whisper not installed"}, status=503)
+    if getattr(hub, "ptt_voice", None) is None:
+        from app.voice.push_to_talk import PushToTalkVoice
+        hub.ptt_voice = PushToTalkVoice(
+            hub.bridge.runtime.agent,
+            hub.bridge.runtime.tts,
+            hub.bridge.runtime.settings,
+            stack=hub.bridge.voice_stack,
+        )
+    result = await asyncio.to_thread(hub.ptt_voice.listen_once, seconds)
+    if result.get("status") == "busy":
+        return web.json_response({"ok": False, **result}, status=409)
+    if result.get("status") != "ok":
+        return web.json_response({"ok": False, **result}, status=422)
+    await hub.on_activity(f"PTT: {result.get('text', '')[:100]}", "success")
+    return web.json_response({"ok": True, **result})
 
 
 async def api_voice_live(req: web.Request) -> web.Response:
@@ -1316,8 +1353,14 @@ async def on_startup(app: web.Application) -> None:
     hub.task_engine = TaskEngine(db_path=os.path.join(BASE, "data", "tasks", "tasks.db"))
 
     def _task_event(ev: dict) -> None:
+        # TaskEngine callbacks can fire from worker threads; schedule onto the
+        # server's running loop (hub.loop) instead of get_event_loop(), which
+        # is deprecated on 3.12+ and raises RuntimeError in foreign threads.
+        loop = hub.loop
+        if loop is None or loop.is_closed():
+            return
         try:
-            asyncio.get_event_loop().create_task(hub._task_event(ev))
+            asyncio.run_coroutine_threadsafe(hub._task_event(ev), loop)
         except RuntimeError:
             pass
 
@@ -1529,6 +1572,7 @@ def main() -> None:
     app.router.add_get("/api/tools", api_tools)
     app.router.add_get("/api/memory", api_memory)
     app.router.add_get("/api/audit", api_audit)
+    app.router.add_post("/api/voice/ptt", api_voice_ptt)
     app.router.add_post("/api/voice/live", api_voice_live)
     app.router.add_get("/api/voice/metrics", api_voice_metrics)
     app.router.add_get("/api/voice/metrics/history", api_voice_metrics_history)

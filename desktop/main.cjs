@@ -16,8 +16,18 @@ function backendCommand() {
   if (app.isPackaged && fs.existsSync(packagedBundleExe)) return { command: packagedBundleExe, args: [] };
   if (app.isPackaged && fs.existsSync(packagedFlatExe)) return { command: packagedFlatExe, args: [] };
 
-  const venvPython = path.join(backendDir(), '.venv', 'Scripts', 'python.exe');
-  if (fs.existsSync(venvPython)) return { command: venvPython, args: ['-B', 'server.py'] };
+  // scripts/install_windows.bat creates the venv at the REPOSITORY ROOT;
+  // older/manual layouts may keep it inside backend/. In packaged mode a
+  // portable venv can sit next to runtime/backend. Check all of them
+  // before falling back to whatever `python` resolves to on PATH.
+  const venvCandidates = [
+    path.join(backendDir(), '.venv', 'Scripts', 'python.exe'),
+    path.join(runtimeRoot(), '.venv', 'Scripts', 'python.exe'),
+    path.join(projectRoot(), '.venv', 'Scripts', 'python.exe')
+  ];
+  for (const candidate of venvCandidates) {
+    if (fs.existsSync(candidate)) return { command: candidate, args: ['-B', 'server.py'] };
+  }
   return { command: 'python', args: ['-B', 'server.py'] };
 }
 
