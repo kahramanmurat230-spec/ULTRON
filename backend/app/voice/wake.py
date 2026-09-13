@@ -75,11 +75,17 @@ class PorcupineEngine:
         return bool(self.access_key and self.keyword_path)
 
     def status(self) -> dict:
+        if self.available:
+            error_msg = None
+        elif not self.access_key:
+            # ACCESS_KEY eksikliği her zaman önce raporlanır (test beklentisi + kullanıcı rehberi)
+            error_msg = "PICOVOICE_ACCESS_KEY yok (ücretsiz: console.picovoice.ai)"
+        else:
+            error_msg = self.error or "keyword dosyası bulunamadı"
         return {"engine": self.NAME, "available": self.available,
                 "keyword": self.keyword,
                 "frame_samples": PORCUPINE_FRAME,
-                "error": None if self.available else (
-                    self.error or "PICOVOICE_ACCESS_KEY yok (ücretsiz: console.picovoice.ai)")}
+                "error": error_msg}
 
     def start(self):
         if not self.available:

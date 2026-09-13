@@ -13,14 +13,16 @@ Garantiler:
                  pencere dedup'ı — task→event→task→... sonsuz döngü RED
 
 Wave 1 Task Runtime'ın WAL/dead-letter sistemi KOPYALANMAZ; bu, olaylar
-için ortak abstraction'dır (kendi tabloları, kendi semantiği).
+ için ortak abstraction'dır (kendi tabloları, kendi semantiği).
 Secretler: payload'daki her string persist edilmeden ÖNCE maskelenir.
 """
 from __future__ import annotations
 
 import fnmatch
 import json
+import os
 import sqlite3
+import stat
 import threading
 import time
 import uuid
@@ -62,6 +64,11 @@ class DurableEventBus:
                  retry_attempts: int = DEFAULT_RETRY):
         self.path = Path(db_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        # Mevcut DB read-only ise constructor'da hemen hata fırlat (honest-failure)
+        if self.path.exists() and self._is_read_only(self.path):
+            raise PermissionError(
+                f"Event bus database is read-only, cannot open for writing: {self.path}"
+            )
         self.redact_fn = redact_fn or (lambda t: t)
         self.now = now or time.time
         self.retry_attempts = max(1, int(retry_attempts))
@@ -69,6 +76,15 @@ class DurableEventBus:
         self._lock = threading.RLock()
         self._db = None
         self._init()
+
+    @staticmethod
+    def _is_read_only(path: Path) -> bool:
+        """stat tabanlı yazma izni kontrolü — WAL bypass'ını aşar."""
+        try:
+            st_mode = stat.S_IMODE(os.stat(path).st_mode)
+            return not bool(st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
+        except OSError:
+            return True
 
     def _conn(self):
         if self._db is None:
