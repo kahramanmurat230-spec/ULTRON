@@ -60,15 +60,35 @@ class Agent:
         except asyncio.CancelledError:
             pass
 
+    # "ara/araştır/search" as a standalone word — fixes "araba" false positives and
+    # stops "aç" from matching inside "kaçar" (math must never route to browser).
+    _SEARCH_VERB = re.compile(
+        r"(?:^|[^0-9a-zçğıöşü])(?:araştır|arastır|arastir|ara|search)(?![0-9a-zçğıöşü])"
+    )
+    # Explicit camera requests reach the camera capability — never the browser.
+    _CAMERA = re.compile(
+        r"\bkamera\w*|\bwebcam\w*|\bweb kameras\w*|foto[ğg]raf\s*[çc]ek"
+        r"|\bcamera\b|take a photo|capture (?:a )?photo"
+    )
+    # Browser routes ONLY on an explicit browser name or explicit search intent.
+    # A generic "X aç/open" is NOT a browser command — no Google fallback.
+    _BROWSER = re.compile(r"\b(?:chrome|chromium|firefox|edge|opera|browser|taray[iı]c[iı]\w*)\b")
+
     def parse_intent(self, text: str) -> dict | None:
         t = text.lower()
         m = re.search(r"(?:google'?da|google'da|google da)\s+(.*)", t)
         search_q = m.group(1).strip() if m else None
-        if search_q is None and (" ara" in t or " search" in t or " araştır" in t):
-            search_q = re.sub(r".*(?:ara|search|araştır)\s*", "", t).strip() or None
+        if search_q is None and self._SEARCH_VERB.search(t):
+            search_q = (
+                re.sub(r".*(?:araştır|arastır|arastir|ara|search)[a-zçğıöşü]*\s*", "", t)
+                .strip(" .,;:!?'\"()")
+                or None
+            )
 
         if any(k in t for k in ("screenshot", "ekran görüntüsü", "ekran goruntusu")):
             return {"kind": "screenshot", "steps": ["Capture screen", "Verify file written"]}
+        if self._CAMERA.search(t):
+            return {"kind": "camera", "steps": ["Capture camera frame", "Verify camera result"]}
         if any(k in t for k in ("clear memory", "hafızayı temizle", "hafizayi temizle", "clear the memory")):
             return {"kind": "clear_memory", "steps": ["Clear session memory", "Clear persistent memory", "Verify cleared"]}
         if any(k in t for k in ("remember", "hatırla", "hatirla", "not et")):
@@ -81,9 +101,7 @@ class Agent:
             cmd = re.sub(r"^.*?(run|çalıştır|calistir|terminal)[:\s]*", "", t).strip()
             if cmd:
                 return {"kind": "terminal", "arg": cmd, "steps": [f"exec: {cmd}", "Verify exit code"]}
-        if any(k in t for k in ("chrome", "browser", "tarayıcı", "tarayici", "edge", "firefox")) or (
-            any(k in t for k in ("aç", "ac ", "open", "launch")) and not search_q
-        ):
+        if self._BROWSER.search(t):
             return {"kind": "browser", "arg": "https://www.google.com", "steps": ["Launch browser", "Verify process"]}
         if search_q or any(k in t for k in ("google", " ara.", "search")):
             q = search_q or text
@@ -131,6 +149,14 @@ class Agent:
                 await self.set_state("EXECUTING", "Capturing screen…")
                 result = await self.tools.execute("screen")
                 await self.set_state("VERIFYING", "Checking screenshot file…")
+                await asyncio.sleep(0.25)
+            elif kind == "camera":
+                await self.set_state("EXECUTING", "Capturing camera frame…")
+                result = await self.tools.execute("camera")
+                if result.get("ok") and result.get("image_b64"):
+                    kb = max(1, len(result["image_b64"]) * 3 // 4 // 1024)
+                    result = {**result, "output": f"Kamera karesi alındı (JPEG ≈{kb} KB)."}
+                await self.set_state("VERIFYING", "Checking camera capture…")
                 await asyncio.sleep(0.25)
             elif kind == "browser":
                 await self.set_state("EXECUTING", f"Opening {intent['arg'][:60]}")

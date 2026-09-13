@@ -151,6 +151,9 @@ class UltronRuntime:
         reg.register('skills_list',lambda:self.skills.list(),'Yüklü skilleri listeler.')
         reg.register('find_project',find_project,'Ultron projesini bulur.')
         reg.register('capture_screen',capture_screen,'Gerçek ekran görüntüsü alır.')
+        from app.multimodal.camera_adapter import CameraAdapter
+        self._camera=CameraAdapter()
+        reg.register('camera_capture',lambda:self._camera.capture_jpeg(),'Kameradan tek kare JPEG yakalar (gerçek cihaz; opencv + kamera izni gerekir).')
         reg.register('screen_ocr',screen_ocr,'Ekran OCR yapar.',{'type':'object','properties':{'path':{'type':'string'}},'required':[]})
         reg.register('analyze_screen',lambda path,prompt='Ekranda ne görüyorsun?':self.vision_llm.analyze(path,prompt),'Vision LLM ile ekranı analiz eder.',{'type':'object','properties':{'path':{'type':'string'},'prompt':{'type':'string'}},'required':['path']})
         from app.vision.analyze import analyze_image,diff_images,ocr_elements as _ocr_el
