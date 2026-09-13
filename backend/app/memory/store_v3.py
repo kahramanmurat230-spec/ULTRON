@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import sqlite3
+import stat
 import time
 import uuid
 from pathlib import Path
@@ -46,10 +48,24 @@ class MemoryStore:
     def __init__(self, db_path="data/memory/v3.db", redact_fn=None, now=None):
         self.path = Path(db_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        # Mevcut DB read-only ise constructor'da hemen hata fırlat (§honest-failure)
+        if self.path.exists() and self._is_read_only(self.path):
+            raise PermissionError(
+                f"Memory database is read-only and cannot be opened for writing: {self.path}"
+            )
         self.redact_fn = redact_fn
         self.now = now or time.time
         self._db = None
         self._init_db()
+
+    @staticmethod
+    def _is_read_only(path: Path) -> bool:
+        """stat tabanlı yazma izni kontrolü — WAL bypass'ını aşar."""
+        try:
+            st_mode = stat.S_IMODE(os.stat(path).st_mode)
+            return not bool(st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
+        except OSError:
+            return True
 
     # ------------------------------------------------------------ db core
     def _conn(self) -> sqlite3.Connection:
@@ -140,6 +156,11 @@ class MemoryStore:
               embedding_ref: str | None = None, created_at: float | None = None,
               dedup: bool = True) -> dict:
         """Yeni kayıt. Dönüş: {ok, id, status, duplicate_of?}."""
+        # Çalışma zamanı read-only kontrolü (chmod sonrası çağrı için)
+        if self.path.exists() and self._is_read_only(self.path):
+            raise PermissionError(
+                f"Memory database is read-only, write refused: {self.path}"
+            )
         memory_type = validate_memory_type(memory_type)
         provenance = validate_provenance(provenance)
         record_kind = validate_kind(record_kind)
