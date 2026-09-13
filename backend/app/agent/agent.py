@@ -128,7 +128,15 @@ class Agent:
             return "Kısa: Ultron, görevleri anlayıp gerçekleştiren bir Windows AI asistanıdır.\nAyrıntılı: Ultron; sistem telemetrisi, uygulama kontrolü, web, dosya işlemleri, ekran görüntüsü, hafıza ve çok adımlı görev yürütme gibi yetenekleri tek bir agent çekirdeğinde birleştirmeyi amaçlar."
         if intent=="calculate":
             try: return f"Sonuç: {self.executor.execute([('calculate',{'text':text})],approved=True)[0]}"
-            except Exception as e: return f"Hesaplama yapılamadı: {e}"
+            except Exception: return None  # deterministic parser failed → math falls through to LLM (never browser)
+        if intent=="camera":
+            try: res=self.executor.execute([('camera_capture',{})],approved=True)[0]
+            except Exception as e: return f"Kamera kullanılamadı: {e}"
+            if isinstance(res,dict) and res.get("ok"):
+                kb=max(1,len(res.get("image_b64") or "")*3//4//1024)
+                return f"Kamera karesi alındı (JPEG ≈{kb} KB)."
+            err=(res.get("error") if isinstance(res,dict) else str(res)) or "bilinmeyen hata"
+            return f"Kamera kullanılamadı: {err}"  # honest failure — no engine pretends
         if intent=="system_status":
             r=self.executor.execute([('system_status',{})],approved=True)[0]; g=(r.get('gpus') or [{}])[0]
             return f"CPU {r.get('cpu_percent')}%, RAM {r.get('ram_percent')}%, Disk {r.get('disk_percent')}%, GPU {g.get('util_percent',0)}%."

@@ -19,6 +19,18 @@ VISION_PROMPT = ("Ekranda ne görüyorsun? Açık uygulamalar, pencereler, buton
 def vision_pattern(text: str) -> bool:
     return bool(VISION_RE.search(text or ""))
 
+def _pure_math(text: str) -> bool:
+    """True when the whole message is just an arithmetic expression (37×24, 2+2).
+
+    Math requests must NEVER fall through to the browser/Google. Dots/commas
+    alone (dates, versions) don't count — a real operator between two numbers
+    is required. Unicode operators (× ÷) and digit-x-digit ("2x3") are accepted.
+    """
+    t = (text or "").lower().strip().rstrip("=?").strip()
+    if not t or not re.fullmatch(r"[\d\s.,+\-*/%()×÷x]+", t):
+        return False
+    return bool(re.search(r"\d\s*[+\-*/%×÷x]\s*\d", t))
+
 def classify(text: str) -> str:
     t = text.lower().strip()
     if any(x in t for x in ["ekran görüntüsü", "screenshot", "ekranı gör", "ekranımda ne var", "ekranımda", "ekrandaki", "ekranda ne var"]):
@@ -27,7 +39,11 @@ def classify(text: str) -> str:
         return "self_diagnostic"
     if any(x in t for x in ["cpu", "ram", "gpu", "disk", "sistem durumu", "bilgisayarımın durumu", "bilgisayarımın sistem"]):
         return "system_status"
+    if any(x in t for x in ["kamera", "webcam", "web kamerası", "web kamerasi", "fotoğraf çek", "fotograf cek", "take a photo", "capture a photo", "open camera", "open the camera"]):
+        return "camera"
     if any(x in t for x in CALC_PATTERNS) and re.search(r"\d", t):
+        return "calculate"
+    if _pure_math(t):
         return "calculate"
     if any(x in t for x in ["ollama", "model bağlantısı", "model baglantisi"]):
         return "ollama_status"
@@ -45,7 +61,8 @@ def classify(text: str) -> str:
         return "speak"
     if any(x in t for x in ["sistemi izlemeye başla", "arka planda", "önemli bir değişiklik", "kendiliğinden uyar"]):
         return "proactive"
-    if any(x in t for x in ["chrome", "edge", "notepad", "hesap makinesi", "calculator", "discord", "spotify"]):
+    if any(x in t for x in ["chrome", "edge", "notepad", "hesap makinesi", "calculator", "discord", "spotify",
+                            "firefox", "opera", "tarayıcı", "tarayici", "not defteri", "not defterini"]):
         return "open_app"
     if any(x in t for x in ["google'da", "google da", "google'de", "google de", "web'de", "internette ara", "arama yap"]):
         return "web_search"
